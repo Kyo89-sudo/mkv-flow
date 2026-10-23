@@ -4,7 +4,14 @@
 
 **Modifica, rinomina, verifica.** Una piccola GUI nativa Windows per elaborare
 file MKV in batch, senza ricodifica. C++17 e Win32; nessun runtime Python,
-Electron, .NET o Qt. Versione iniziale **0.1.0**, interfaccia in italiano.
+Electron, .NET o Qt. Versione **0.2.0**, interfaccia in italiano.
+
+## Interfaccia compatta (0.2.0)
+
+Finestra iniziale con area utile di 640 × 460 pixel logici, ridimensionabile.
+Le quattro schede separano Coda, Tracce, Impostazioni e Log. Le impostazioni
+restano conservate passando da una scheda all’altra; Avvia e Annulla sono sempre
+accessibili. Il pulsante Analizza apre automaticamente il Log.
 
 ## Funzioni
 
@@ -17,7 +24,7 @@ Electron, .NET o Qt. Versione iniziale **0.1.0**, interfaccia in italiano.
 - Analisi JSON del file selezionato tramite `mkvmerge -J`, visibile nel log.
 - Percorsi e modello di rinomina ricordati in `%LOCALAPPDATA%\MKVFlow\settings.ini`.
 - Icona 3D dedicata inclusa in PNG trasparente e ICO multirisoluzione.
-- Versione 0.1.0 visibile nella finestra e nelle proprietà dell'eseguibile.
+- Versione 0.2.0 visibile nella finestra e nelle proprietà dell'eseguibile.
 
 MKVToolNix è una dipendenza **esterna**, non inclusa né modificata. Installarlo da
 [mkvtoolnix.download](https://mkvtoolnix.download/downloads.html#windows), conservando
@@ -53,7 +60,7 @@ seleziona v145 per VS 2026. La workflow produce l'EXE come artifact, senza pubbl
 
 ## Uso
 
-1. Selezionare la cartella contenente `mkvmerge.exe` e `mkvpropedit.exe`.
+1. Nella scheda **Impostazioni**, selezionare la cartella contenente `mkvmerge.exe` e `mkvpropedit.exe`.
 2. Aggiungere MKV o trascinare file/cartelle sulla finestra. Le cartelle sono lette
    soltanto al primo livello; i percorsi già presenti non sono aggiunti due volte.
 3. Scegliere una cartella output scrivibile. Può essere quella dei sorgenti:
@@ -61,7 +68,7 @@ seleziona v145 per VS 2026. La workflow produce l'EXE come artifact, senza pubbl
 4. Impostare il modello nome **senza estensione**, per esempio:
    - `{name} [{crc}]` → `Episodio 01 [A1B2C3D4].mkv`
    - `Serie - {n} [{crc}]` → `Serie - 1 [A1B2C3D4].mkv`
-5. Per cambiare il titolo spuntare **Imposta titolo**. Accetta `{name}` e `{n}`;
+5. Nella scheda **Tracce**, per cambiare il titolo spuntare **Imposta titolo**. Accetta `{name}` e `{n}`;
    il campo vuoto imposta un titolo vuoto. `{crc}` è consentito solo nel nome file:
    inserirlo nel contenitore cambierebbe nuovamente il checksum.
 6. Aggiungere le regole traccia con i campi, poi **Aggiungi regola**. Le regole
@@ -93,7 +100,7 @@ Lingue: `ita`, `eng`, `jpn` o tag BCP 47 supportati da MKVToolNix. Flag: vuoto,
 come predefinita: aggiungere esplicitamente le regole per le altre tracce.
 Il carattere `|` non è ammesso nei campi delle regole.
 
-## Comportamento e limiti della 0.1
+## Comportamento e limiti della 0.2
 
 - Un file alla volta, su thread di lavoro; GUI disponibile durante il batch.
 - Log dello strumento e riepilogo; gli avvisi MKVToolNix (exit code 1) sono segnalati
