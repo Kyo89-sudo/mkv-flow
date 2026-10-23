@@ -1,0 +1,24 @@
+name: Windows build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Build (installed VS toolset)
+        run: msbuild MKVFlow.sln /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+      - name: Set up developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Unit tests
+        shell: cmd
+        run: test.cmd
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MKVFlow-windows-x64
+          path: bin/Release/MKVFlow.exe

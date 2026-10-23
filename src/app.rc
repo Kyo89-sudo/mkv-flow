@@ -1,0 +1,25 @@
+#include <windows.h>
+#include "version.h"
+1 ICON "app.ico"
+1 VERSIONINFO
+FILEVERSION MKVFLOW_VERSION_NUM
+PRODUCTVERSION MKVFLOW_VERSION_NUM
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+ BLOCK "StringFileInfo"
+ BEGIN
+  BLOCK "040904b0"
+  BEGIN
+   VALUE "FileDescription", "MKV Flow - MKV batch tools\0"
+   VALUE "ProductName", "MKV Flow\0"
+   VALUE "FileVersion", MKVFLOW_VERSION "\0"
+   VALUE "ProductVersion", MKVFLOW_VERSION "\0"
+   VALUE "OriginalFilename", "MKVFlow.exe\0"
+  END
+ END
+ BLOCK "VarFileInfo"
+ BEGIN
+  VALUE "Translation", 0x409, 1200
+ END
+END
