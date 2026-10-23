@@ -1,0 +1,6 @@
+.vs/
+build/
+bin/
+*.user
+*.VC.db
+test-output/
