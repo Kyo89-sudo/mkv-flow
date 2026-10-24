@@ -3,6 +3,8 @@
 - Test core per trova/sostituisci, piano di rinomina (file affiancati, collisioni,
   nomi non validi, maiuscole), sostituzione nei nomi e titoli del batch; eseguiti
   su Windows in CI e su Linux con stub Win32 e ASan/UBSan.
+- Test per `[CRC]` nei nomi: riconoscimento, rimozione, riuso senza rilettura,
+  file affiancati con e senza CRC, nomi già corretti saltati.
 - Test Windows della rinomina reale: nomi applicati e mai sovrascritti.
 - Non verificati a mano: scheda Rinomina nella GUI e aggiornamento del titolo interno.
 

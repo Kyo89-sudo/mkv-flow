@@ -302,7 +302,28 @@ std::wstring fileName(const std::wstring& text) {
 }
 
 std::wstring outputStem(const Job& job, const Options& o) {
-    return replaceText(job.input().stem().wstring(), o.replaceFind, o.replaceWith, o.replaceIgnoreCase);
+    // Il vecchio [CRC] del sorgente non ha senso nel nuovo file: si toglie sempre.
+    return replaceText(stripCrc(job.input().stem().wstring()), o.replaceFind, o.replaceWith, o.replaceIgnoreCase);
+}
+
+namespace {
+const std::wregex& crcTag() {
+    static const std::wregex re(L"^(.*?)[\\s_.]*[\\[(]([0-9A-Fa-f]{8})[\\])][\\s_.]*$");
+    return re;
+}
+}  // namespace
+
+std::wstring stripCrc(const std::wstring& stem) {
+    std::wsmatch m;
+    return std::regex_match(stem, m, crcTag()) && m[1].length() ? m[1].str() : stem;
+}
+
+std::wstring existingCrc(const std::wstring& stem) {
+    std::wsmatch m;
+    if (!std::regex_match(stem, m, crcTag()) || !m[1].length()) return {};
+    auto crc = m[2].str();
+    std::transform(crc.begin(), crc.end(), crc.begin(), towupper);
+    return crc;
 }
 
 bool validLanguage(const std::wstring& code) {
@@ -961,37 +982,49 @@ std::vector<fs::path> listMkv(const fs::path& folder) {
     return found;
 }
 
-std::vector<RenameItem> planRename(const std::vector<fs::path>& mkvs, const RenameRules& rules) {
+std::vector<RenameItem> planRename(const std::vector<fs::path>& mkvs, const RenameRules& rules, const std::vector<std::wstring>* crcs) {
     std::vector<RenameItem> plan;
-    if (rules.find.empty()) return plan;
-    // Un file affiancato appartiene all'MKV con il nome più lungo che lo precede:
-    // "Ep 1 parte 2.srt" va con "Ep 1 parte 2.mkv", non con "Ep 1.mkv".
-    std::vector<std::pair<fs::path, size_t>> owners;
+    auto pattern = rules.pattern.empty() ? std::wstring(L"{name}") : rules.pattern;
+    // File affiancati: "Ep 1 [CRC].ita.srt" oppure "Ep 1.ita.srt" accanto a "Ep 1 [CRC].mkv".
+    // Ognuno appartiene all'MKV con il prefisso più lungo: "Ep 1 parte 2.srt" va con "Ep 1 parte 2.mkv".
+    struct Owner { fs::path file; size_t mkv; size_t prefix; };
+    std::vector<Owner> owners;
     if (rules.companions)
-        for (size_t i = 0; i < mkvs.size(); ++i)
-            for (const auto& c : findCompanions(mkvs[i])) {
-                auto it = std::find_if(owners.begin(), owners.end(), [&](const auto& o) { return sameFile(o.first, c); });
-                if (it == owners.end()) owners.push_back({c, i});
-                else if (mkvs[i].stem().wstring().size() > mkvs[it->second].stem().wstring().size()) it->second = i;
+        for (size_t i = 0; i < mkvs.size(); ++i) {
+            auto stem = mkvs[i].stem().wstring(), base = stripCrc(stem);
+            for (const auto& prefix : {stem, base}) {
+                for (const auto& c : findCompanions(mkvs[i].parent_path() / (prefix + L".mkv"))) {
+                    if (sameFile(c, mkvs[i])) continue;
+                    auto it = std::find_if(owners.begin(), owners.end(), [&](const Owner& o) { return sameFile(o.file, c); });
+                    if (it == owners.end()) owners.push_back({c, i, prefix.size()});
+                    else if (prefix.size() > it->prefix) { it->mkv = i; it->prefix = prefix.size(); }
+                }
+                if (base == stem) break;
             }
+        }
     for (size_t i = 0; i < mkvs.size(); ++i) {
         auto stem = mkvs[i].stem().wstring();
-        auto newStem = replaceText(stem, rules.find, rules.with, rules.ignoreCase);
-        if (newStem == stem) continue;
-        RenameItem item{mkvs[i], mkvs[i].parent_path() / (newStem + mkvs[i].extension().wstring()), false, i, {}};
+        auto name = replaceText(stripCrc(stem), rules.find, rules.with, rules.ignoreCase);
+        std::wstring crc = crcs && i < crcs->size() ? (*crcs)[i] : std::wstring();
+        if (crc.empty()) crc = existingCrc(stem);
+        bool provisional = rules.wantsCrc() && crc.empty();
+        auto newStem = expand(pattern, name, i + 1, provisional ? std::wstring(L"CRC32") : crc);
+        if (!provisional && newStem == stem) continue;
+        RenameItem item{mkvs[i], mkvs[i].parent_path() / (newStem + mkvs[i].extension().wstring()), false, i, {}, provisional};
         item.error = nameProblem(item.to.filename().wstring());
         plan.push_back(item);
-        for (const auto& [file, owner] : owners) {
-            if (owner != i) continue;
-            auto rest = file.filename().wstring().substr(stem.size());
-            RenameItem c{file, file.parent_path() / (newStem + rest), true, i, {}};
+        for (const auto& o : owners) {
+            if (o.mkv != i) continue;
+            auto rest = o.file.filename().wstring().substr(o.prefix);
+            RenameItem c{o.file, o.file.parent_path() / (newStem + rest), true, i, {}, provisional};
             c.error = nameProblem(c.to.filename().wstring());
+            if (!provisional && sameFile(c.from, c.to)) continue;
             plan.push_back(c);
         }
     }
     std::set<std::wstring> targets;
     for (auto& item : plan) {
-        if (!targets.insert(lower(item.to.wstring())).second && item.error.empty()) item.error = L"un altro file avrebbe lo stesso nome";
+        if (!item.pendingCrc && !targets.insert(lower(item.to.wstring())).second && item.error.empty()) item.error = L"un altro file avrebbe lo stesso nome";
         std::error_code ec;
         if (item.error.empty() && !sameFile(item.from, item.to) && fs::exists(item.to, ec)) item.error = L"esiste già un file con questo nome";
     }
@@ -1008,6 +1041,7 @@ std::vector<std::pair<fs::path, fs::path>> applyRename(std::vector<RenameItem>& 
     for (auto& item : plan) {
         if (!item.error.empty()) continue;
         // Nessun MOVEFILE_REPLACE_EXISTING: un file esistente non viene mai sovrascritto.
+        if (item.pendingCrc) { item.error = L"CRC32 non calcolato"; continue; }
         if (MoveFileExW(item.from.c_str(), item.to.c_str(), 0)) done.push_back({item.from, item.to});
         else item.error = L"rinomina fallita (errore Windows " + std::to_wstring(GetLastError()) + L")";
     }

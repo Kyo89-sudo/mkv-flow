@@ -224,6 +224,7 @@ void unitTests() {
     RenameRules rules;
     rules.find = L"IsLAND";
     rules.with = L"MIRCrew";
+    rules.pattern = L"{name}";
     auto plan = planRename(mkvs, rules);
     auto entry = [&](const wchar_t* from) -> const RenameItem* {
         for (const auto& i : plan) if (i.from.filename() == from) return &i;
@@ -243,6 +244,40 @@ void unitTests() {
     rules.find.clear();
     require(planRename(mkvs, rules).empty(), "empty find");
     fs::remove_all(rdir, ec);
+
+    // --- Struttura "nome [CRC32].mkv"
+    require(stripCrc(L"Ep 01 [a1b2c3d4]") == L"Ep 01" && existingCrc(L"Ep 01 [a1b2c3d4]") == L"A1B2C3D4", "strip crc");
+    require(stripCrc(L"Ep_01_(A1B2C3D4)") == L"Ep_01" && stripCrc(L"Ep 01 [1080p]") == L"Ep 01 [1080p]", "strip crc variants");
+    require(stripCrc(L"[A1B2C3D4]") == L"[A1B2C3D4]" && existingCrc(L"Ep 01").empty(), "strip crc edge");
+    require(stripCrc(L"Ep [DEADBEEF] fine") == L"Ep [DEADBEEF] fine", "crc only at the end");
+    auto cdir = fs::temp_directory_path() / (L"mkvflow-crcname-" + std::to_wstring(GetCurrentProcessId()));
+    fs::create_directories(cdir);
+    for (auto name : {L"S01E01-IsLAND [11111111].mkv", L"S01E01-IsLAND.ita.srt", L"S01E02-IsLAND.mkv", L"S01E02-IsLAND [22222222].eng.ass"})
+        std::ofstream(cdir / name) << "x";
+    auto cm = listMkv(cdir);
+    RenameRules cr;
+    cr.find = L"island";
+    cr.with = L"MIRCrew";
+    auto preview = planRename(cm, cr);
+    require(preview.size() == 4 && !preview[0].pendingCrc && preview[0].to.filename() == L"S01E01-MIRCrew [11111111].mkv", "preview reuses existing crc");
+    require(preview[2].pendingCrc && preview[2].to.filename() == L"S01E02-MIRCrew [CRC32].mkv", "preview placeholder when missing");
+    std::vector<std::wstring> crcs{L"AAAA0001", L"BBBB0002"};  // es. dopo una verifica o un titolo cambiato
+    auto real = planRename(cm, cr, &crcs);
+    auto target = [&](const wchar_t* from) {
+        for (const auto& i : real) if (i.from.filename() == from) return i.to.filename().wstring();
+        return std::wstring(L"<assente>");
+    };
+    require(target(L"S01E01-IsLAND [11111111].mkv") == L"S01E01-MIRCrew [AAAA0001].mkv", "old crc replaced");
+    require(target(L"S01E01-IsLAND.ita.srt") == L"S01E01-MIRCrew [AAAA0001].ita.srt", "companion without crc follows");
+    require(target(L"S01E02-IsLAND.mkv") == L"S01E02-MIRCrew [BBBB0002].mkv", "crc added");
+    require(target(L"S01E02-IsLAND [22222222].eng.ass") == L"S01E02-MIRCrew [BBBB0002] [22222222].eng.ass", "companion keeps its suffix");
+    cr.find.clear();
+    std::vector<std::wstring> same{L"", L"BBBB0002"};  // il primo riusa il CRC del nome
+    auto unchanged = planRename(cm, cr, &same);
+    require(unchanged.size() == 2 && unchanged[0].from.filename() == L"S01E02-IsLAND.mkv", "already correct name skipped");
+    Options so;
+    require(outputStem(makeJob(L"Ep 05 [ABCDEF12].mkv"), so) == L"Ep 05", "batch drops old crc");
+    fs::remove_all(cdir, ec);
 }
 
 void processTests(const wchar_t* self) {
@@ -264,6 +299,7 @@ void processTests(const wchar_t* self) {
     RenameRules rules;
     rules.find = L"island";
     rules.with = L"MIRCrew";
+    rules.pattern = L"{name}";
     auto plan = planRename(listMkv(rdir), rules);
     auto done = applyRename(plan);
     require(done.size() == 3 && fs::exists(rdir / L"S01E01-MIRCrew.mkv") && fs::exists(rdir / L"S01E01-MIRCrew.srt") && fs::exists(rdir / L"S01E02-MIRCrew.mkv"), "rename applied");
