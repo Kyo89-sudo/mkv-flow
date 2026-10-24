@@ -186,7 +186,78 @@ void layout() {
 void showPage(int page) {
     currentPage = page;
     for (const auto& c : controls) ShowWindow(c.h, c.page < 0 || c.page == page ? SW_SHOW : SW_HIDE);
-    for (int i = 0; i < PageCount; ++i) check(NavQueue + i, i == page);
+    for (int i = 0; i < PageCount; ++i) {
+        check(NavQueue + i, i == page);
+        InvalidateRect(control(NavQueue + i), nullptr, FALSE);
+    }
+}
+
+// Native buttons retain keyboard/accessibility behavior; only their paint changes.
+bool isSegment(HWND h) {
+    wchar_t className[32]{};
+    GetClassNameW(h, className, static_cast<int>(std::size(className)));
+    if (_wcsicmp(className, L"BUTTON") != 0) return false;
+    const auto style = GetWindowLongPtrW(h, GWL_STYLE);
+    const auto type = style & BS_TYPEMASK;
+    return type == BS_PUSHBUTTON || type == BS_DEFPUSHBUTTON ||
+           (type == BS_AUTORADIOBUTTON && (style & BS_PUSHLIKE));
+}
+LRESULT paintSegment(NMCUSTOMDRAW* draw) {
+    if (draw->dwDrawStage != CDDS_PREPAINT) return CDRF_DODEFAULT;
+    HWND h = draw->hdr.hwndFrom;
+    const int id = GetDlgCtrlID(h);
+    const bool nav = id >= NavQueue && id < NavQueue + PageCount;
+    const bool active = nav && id - NavQueue == currentPage;
+    const bool primary = id == Start || id == RenApply;
+    const bool enabled = IsWindowEnabled(h) != FALSE;
+    const bool pressed = (draw->uItemState & CDIS_SELECTED) != 0;
+    const bool hot = (draw->uItemState & CDIS_HOT) != 0;
+    const bool blue = enabled && (active || primary);
+    const COLORREF fill = !enabled ? RGB(247, 248, 250) : blue ?
+        (pressed ? RGB(16, 83, 157) : hot ? RGB(22, 101, 189) : RGB(25, 118, 210)) :
+        pressed ? RGB(224, 237, 251) : hot ? RGB(238, 245, 253) : RGB(255, 255, 255);
+    const COLORREF border = blue ? fill : RGB(183, 198, 216);
+    const COLORREF ink = !enabled ? RGB(155, 165, 178) : blue ? RGB(255, 255, 255) : RGB(23, 50, 81);
+    bool joinedLeft = false, joinedRight = false;
+    auto own = std::find_if(controls.begin(), controls.end(), [h](const Placement& p) { return p.h == h; });
+    if (own != controls.end()) for (const auto& p : controls) {
+        if (p.h == h || p.page != own->page || p.y != own->y || p.hgt != own->hgt || !isSegment(p.h)) continue;
+        joinedLeft = joinedLeft || p.x + p.w == own->x;
+        joinedRight = joinedRight || own->x + own->w == p.x;
+    }
+    HDC dc = draw->hdc;
+    const int saved = SaveDC(dc);
+    RECT r = draw->rc;
+    HBRUSH back = CreateSolidBrush(RGB(255, 255, 255));
+    FillRect(dc, &r, back); DeleteObject(back);
+    HBRUSH brush = CreateSolidBrush(fill);
+    HPEN pen = CreatePen(PS_SOLID, 1, border);
+    SelectObject(dc, brush); SelectObject(dc, pen);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, px(7), px(7));
+    // Square internal corners so adjacent buttons read as one segmented group.
+    const int edge = px(5);
+    if (joinedLeft) {
+        RECT part{r.left, r.top + 1, r.left + edge, r.bottom - 1}; FillRect(dc, &part, brush);
+        MoveToEx(dc, r.left, r.top, nullptr); LineTo(dc, r.left + edge, r.top);
+        MoveToEx(dc, r.left, r.bottom - 1, nullptr); LineTo(dc, r.left + edge, r.bottom - 1);
+        MoveToEx(dc, r.left, r.top, nullptr); LineTo(dc, r.left, r.bottom);
+    }
+    if (joinedRight) {
+        RECT part{r.right - edge, r.top + 1, r.right, r.bottom - 1}; FillRect(dc, &part, brush);
+        MoveToEx(dc, r.right - edge, r.top, nullptr); LineTo(dc, r.right, r.top);
+        MoveToEx(dc, r.right - edge, r.bottom - 1, nullptr); LineTo(dc, r.right, r.bottom - 1);
+        MoveToEx(dc, r.right - 1, r.top, nullptr); LineTo(dc, r.right - 1, r.bottom);
+    }
+    SelectObject(dc, font); SetBkMode(dc, TRANSPARENT); SetTextColor(dc, ink);
+    std::wstring text = get(id);
+    RECT caption = r; InflateRect(&caption, -px(6), 0);
+    DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &caption,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    if ((draw->uItemState & CDIS_FOCUS) && !(SendMessageW(h, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS)) {
+        RECT focus = r; InflateRect(&focus, -px(3), -px(3)); DrawFocusRect(dc, &focus);
+    }
+    RestoreDC(dc, saved); DeleteObject(brush); DeleteObject(pen);
+    return CDRF_SKIPDEFAULT;
 }
 
 // ---------------------------------------------------------------------------
@@ -911,6 +982,8 @@ void command(int id, int code) {
 }
 
 LRESULT notify(NMHDR* hdr) {
+    if (hdr->code == NM_CUSTOMDRAW && isSegment(hdr->hwndFrom))
+        return paintSegment(reinterpret_cast<NMCUSTOMDRAW*>(hdr));
     if (hdr->idFrom == Queue) {
         if (hdr->code == NM_DBLCLK) openJob(reinterpret_cast<NMITEMACTIVATE*>(hdr)->iItem);
         else if (hdr->code == LVN_ITEMCHANGED) {
@@ -947,19 +1020,22 @@ void build() {
     font = CreateFontW(-MulDiv(14, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
                        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     label(L"MKV Flow " MKVFLOW_VERSION_W L"  /  Flussi, rinomina, verifica", 12, 12, 736, GrowW);
-    int nav = NavQueue;
-    for (auto text : {L"Coda", L"Flussi", L"Rinomina", L"Impostazioni", L"Log"}) {
-        make(L"BUTTON", text, nav, 12 + (nav - NavQueue) * 120, 40, 114, 28,
+    label(L"Vista", 12, 43, 42);
+    int nav = NavQueue, navX = 60;
+    for (const auto& entry : {std::pair{L"Coda", 82}, std::pair{L"Flussi", 82}, std::pair{L"Rinomina", 100},
+                              std::pair{L"Impostazioni", 124}, std::pair{L"Log", 70}}) {
+        make(L"BUTTON", entry.first, nav, navX, 38, entry.second, 28,
              WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | (nav == NavQueue ? WS_GROUP : 0));
+        navX += entry.second;
         ++nav;
     }
 
     buildingPage = PageQueue;
     button(L"Aggiungi MKV...", Add, 12, 80, 124);
-    button(L"Rimuovi", Remove, 140, 80, 80);
-    button(L"Svuota", Clear, 224, 80, 72);
+    button(L"Rimuovi", Remove, 136, 80, 80);
+    button(L"Svuota", Clear, 216, 80, 72);
     button(L"Analizza tutto", AnalyzeAll, 300, 80, 112);
-    button(L"Abbina tracce esterne", Companions, 416, 80, 168);
+    button(L"Abbina tracce esterne", Companions, 412, 80, 168);
     label(L"Trascina qui file MKV o cartelle. Doppio clic su un file per modificarne i flussi.", 12, 114, 736, GrowW);
     listView(Queue, 12, 134, 736, 232, 0, 0, {{L"File", 380}, {L"Flussi", 150}, {L"Esterni", 60}, {L"Stato", 140}});
     label(L"Output", 12, 382, 70, MoveY);
@@ -975,9 +1051,9 @@ void build() {
     button(L"Analizza", AnalyzeOne, 506, 79, 100, MoveX);
     button(L"Ripristina", Reset, 610, 79, 138, MoveX);
     button(L"▲ Su", MoveUp, 12, 112, 64);
-    button(L"▼ Giù", MoveDown, 80, 112, 64);
+    button(L"▼ Giù", MoveDown, 76, 112, 64);
     button(L"Aggiungi traccia esterna...", AddExternal, 152, 112, 196);
-    button(L"Rimuovi esterna", RemoveExternal, 352, 112, 128);
+    button(L"Rimuovi esterna", RemoveExternal, 348, 112, 128);
     button(L"Applica a tutti i file", ApplyAll, 588, 112, 160, MoveX);
     listView(Tracks, 12, 146, 736, 194, LVS_SINGLESEL, LVS_EX_CHECKBOXES,
              {{L"#", 44}, {L"Tipo", 100}, {L"Codec", 100}, {L"Lingua", 64}, {L"Nome", 150}, {L"Pred.", 46}, {L"Forz.", 46},
@@ -1017,8 +1093,8 @@ void build() {
     checkbox(L"Usa la stessa sostituzione per i nomi e i titoli creati dal batch", RenBatch, 12, 252, 736, GrowW);
     listView(RenPreview, 12, 280, 736, 150, 0, 0, {{L"Nome attuale", 300}, {L"Nuovo nome", 300}, {L"Stato", 120}});
     button(L"Rinomina", RenApply, 12, 440, 120, MoveY);
-    button(L"Annulla ultima rinomina", RenUndo, 136, 440, 184, MoveY);
-    button(L"Aggiorna anteprima", RenRefresh, 324, 440, 150, MoveY);
+    button(L"Annulla ultima rinomina", RenUndo, 132, 440, 184, MoveY);
+    button(L"Aggiorna anteprima", RenRefresh, 316, 440, 150, MoveY);
 
     buildingPage = PageSettings;
     label(L"Cartella MKVToolNix", 12, 84, 400);
@@ -1041,7 +1117,7 @@ void build() {
 
     buildingPage = -1;  // barra inferiore
     make(L"BUTTON", L"Avvia batch", Start, 12, 494, 112, 32, WS_TABSTOP, MoveY);
-    make(L"BUTTON", L"Annulla", Cancel, 130, 494, 90, 32, WS_TABSTOP, MoveY);
+    make(L"BUTTON", L"Annulla", Cancel, 124, 494, 90, 32, WS_TABSTOP, MoveY);
     EnableWindow(control(Cancel), FALSE);
     make(PROGRESS_CLASSW, L"", ProgressBar, 230, 501, 160, 18, PBS_SMOOTH, MoveY);
     SendMessageW(control(ProgressBar), PBM_SETRANGE32, 0, 1000);
@@ -1107,6 +1183,10 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         switch (msg) {
         case WM_CREATE: window = hwnd; build(); return 0;
         case WM_SIZE: layout(); return 0;
+        case WM_CTLCOLORSTATIC:
+            SetTextColor(reinterpret_cast<HDC>(w), RGB(23, 50, 81));
+            SetBkColor(reinterpret_cast<HDC>(w), RGB(255, 255, 255));
+            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
         case WM_GETMINMAXINFO: {
             RECT bounds{0, 0, MulDiv(BaseWidth, dpi, 96), MulDiv(BaseHeight, dpi, 96)};
             AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, 0);
@@ -1176,7 +1256,7 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE, PWSTR, int show) {
     wc.hInstance = h;
     wc.lpszClassName = L"MKVFlowWindow";
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.hIcon = LoadIconW(h, MAKEINTRESOURCEW(1));
     RegisterClassW(&wc);
     dpi = GetDpiForSystem();

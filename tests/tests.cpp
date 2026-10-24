@@ -295,14 +295,19 @@ void processTests(const wchar_t* self) {
     // Rinomina reale: nessuna sovrascrittura, annullabile.
     auto rdir = fs::temp_directory_path() / (L"mkvflow-rename-run-" + std::to_wstring(GetCurrentProcessId()));
     fs::create_directories(rdir);
-    for (auto name : {L"S01E01-IsLAND.mkv", L"S01E01-IsLAND.srt", L"S01E02-island.mkv"}) std::ofstream(rdir / name) << name[5];
+    for (auto name : {L"S01E01-IsLAND.mkv", L"S01E01-IsLAND.srt", L"S01E01-IsLAND.flac", L"S01E02-island.mkv"}) std::ofstream(rdir / name) << name[5];
     RenameRules rules;
     rules.find = L"island";
     rules.with = L"MIRCrew";
     rules.pattern = L"{name}";
+    rules.companions = false;  // Same policy as the Rename page: only MKV files.
     auto plan = planRename(listMkv(rdir), rules);
     auto done = applyRename(plan);
-    require(done.size() == 3 && fs::exists(rdir / L"S01E01-MIRCrew.mkv") && fs::exists(rdir / L"S01E01-MIRCrew.srt") && fs::exists(rdir / L"S01E02-MIRCrew.mkv"), "rename applied");
+    if (done.size() != 2) for (const auto& item : plan)
+        std::wcerr << L"Rename test: " << item.from << L" -> " << item.to << L": " << item.error << L'\n';
+    require(done.size() == 2 && fs::exists(rdir / L"S01E01-MIRCrew.mkv") && fs::exists(rdir / L"S01E02-MIRCrew.mkv"), "rename applied");
+    require(fs::exists(rdir / L"S01E01-IsLAND.srt") && fs::exists(rdir / L"S01E01-IsLAND.flac") &&
+            !fs::exists(rdir / L"S01E01-MIRCrew.srt") && !fs::exists(rdir / L"S01E01-MIRCrew.flac"), "rename leaves subtitles and audio untouched");
     require(!fs::exists(rdir / L"S01E01-IsLAND.mkv"), "old name gone");
     std::ofstream(rdir / L"S01E01-IsLAND.mkv") << "nuovo";
     std::vector<RenameItem> undo{{rdir / L"S01E01-MIRCrew.mkv", rdir / L"S01E01-IsLAND.mkv", false, 0, {}}};

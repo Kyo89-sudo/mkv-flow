@@ -1,3 +1,14 @@
+# Verifica 0.4.2 — 24 ottobre 2026
+
+- Build Release x64 con Visual Studio 2026 / MSVC v145 e avvisi trattati come errori: riuscita.
+- Suite core (91 verifiche), processi e integrazione reale con MKVToolNix v103.0: superata.
+- Rinomina sul posto verificata in una cartella temporanea del workspace: solo MKV;
+  sottotitoli/audio affiancati intatti, collisioni senza sovrascrittura.
+- Aspetto della Coda controllato sull'anteprima approvata: selezione blu e comandi uniti.
+- Nessun cambiamento al motore; la personalizzazione riguarda il disegno dei pulsanti Win32.
+- Non verificati DPI multipli, contrasto elevato o tutte le combinazioni di focus/tema.
+- Pacchetto non firmato digitalmente.
+
 # Verifica 0.4.0 / 0.4.1 — 24 ottobre 2026
 
 - Test core per trova/sostituisci, piano di rinomina (file affiancati, collisioni,

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2 — 2026-10-24 — Comandi raggruppati
+
+- Navigazione a segmenti affiancati con selezione blu, nello stile del riferimento approvato.
+- Comandi raggruppati per funzione, bordi sottili e sfondo chiaro.
+- Azioni principali evidenziate; navigazione da tastiera e controlli Win32 conservati.
+- Test di rinomina allineato alla modalità GUI: solo MKV, audio e sottotitoli intatti.
+- Nessuna modifica al motore di elaborazione dei file.
+
 ## 0.4.1 — 2026-10-24 — Rinomina con CRC32
 
 - Struttura `nome [CRC32].mkv` (campo Nome, `{name} [{crc}]`): il vecchio CRC è tolto dal

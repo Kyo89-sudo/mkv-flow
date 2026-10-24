@@ -4,8 +4,13 @@
 
 **Flussi, rinomina, verifica.** Una piccola GUI nativa Windows per modificare i
 flussi video, audio e sottotitoli di file MKV in batch, senza ricodifica.
-C++17 e Win32; nessun runtime Python, Electron, .NET o Qt. Versione **0.4.1**,
+C++17 e Win32; nessun runtime Python, Electron, .NET o Qt. Versione **0.4.2**,
 interfaccia in italiano.
+
+## Novità 0.4.2: comandi raggruppati
+
+Barra Vista a segmenti affiancati, selezione blu, comandi raggruppati per funzione
+e sfondo chiaro. Restano disponibili tutti gli strumenti della versione 0.4.1.
 
 ## Novità 0.3: editor dei flussi
 
