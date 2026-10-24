@@ -43,13 +43,21 @@ remux con `mkvmerge`, sempre senza ricodificare audio o video.
 
 ## Rinomina episodi (0.4)
 
-La scheda **Rinomina** cambia i nomi dei file di una cartella con un trova/sostituisci,
-per esempio da `S01E01-IsLAND.mkv` a `S01E01-MIRCrew.mkv` per tutta la stagione:
+La scheda **Rinomina** rinomina in blocco gli MKV di una cartella mantenendo la
+struttura `nome [CRC32].mkv`, per esempio da `S01E01-IsLAND [A1B2C3D4].mkv` a
+`S01E01-MIRCrew [A1B2C3D4].mkv` per tutta la stagione:
 
 1. Scegliere la cartella (o **Usa output** per quella del batch).
-2. **Trova** `IsLAND`, **Sostituisci con** `MIRCrew`. L'anteprima mostra subito
-   *nome attuale → nuovo nome* e gli eventuali problemi.
-3. **Rinomina**, poi confermare. **Annulla ultima rinomina** rimette i nomi di prima.
+2. Facoltativo: **Trova** `IsLAND`, **Sostituisci con** `MIRCrew`.
+3. **Nome** (predefinito `{name} [{crc}]`): `{name}` è il nome attuale senza il vecchio
+   `[CRC]`, dopo il trova/sostituisci; `{crc}` il CRC32; `{n}` il numero in ordine alfabetico.
+   L'anteprima mostra subito *nome attuale → nuovo nome* e gli eventuali problemi.
+4. **Rinomina**, poi confermare. **Annulla ultima rinomina** rimette i nomi di prima.
+
+Rinominare non cambia il contenuto, quindi un CRC già presente nel nome viene **riusato**
+senza rileggere il file: la rinomina è immediata. Il CRC32 viene calcolato solo per i file
+che non lo hanno nel nome, per quelli di cui si modifica il titolo interno, oppure per
+tutti con **Verifica i CRC già presenti**, che segnala nel Log i nomi con CRC sbagliato.
 
 - Lavora sul posto: nessuna copia, nessun remux, i file esistenti non vengono mai
   sovrascritti (un nome già presente è segnalato e quel file viene saltato).
@@ -127,7 +135,7 @@ nel titolo cambierebbe di nuovo il checksum.
   Exit code maggiori di 1 fanno fallire il file, il batch prosegue.
 - Le tracce esterne sono per file: *Applica a tutti* non le copia (usare *Abbina*).
 - Nessuna conversione codec, editor di capitoli/tag o elaborazione parallela.
-- I vecchi CRC nel nome sorgente non vengono rimossi automaticamente.
+- Nel batch un vecchio `[CRC]` alla fine del nome sorgente viene tolto da `{name}`.
 - Durante il lavoro serve spazio per un file output intero.
 - L'annullamento mantiene gli output completati ed elimina quello in corso. Dopo un
   arresto forzato può restare un `mkf*.tmp` nella cartella output: rimuoverlo a mano.

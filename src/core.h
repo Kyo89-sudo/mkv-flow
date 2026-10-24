@@ -134,19 +134,28 @@ fs::path process(const Job& job, size_t index, const Options& o, std::atomic_boo
 // ---------------------------------------------------------------------------
 std::wstring replaceText(const std::wstring& text, const std::wstring& find, const std::wstring& with, bool ignoreCase);
 
+std::wstring stripCrc(const std::wstring& stem);      // "Ep 01 [A1B2C3D4]" → "Ep 01"
+std::wstring existingCrc(const std::wstring& stem);   // "A1B2C3D4" oppure vuoto
+
 struct RenameItem {
     fs::path from, to;
     bool companion = false;     // sottotitolo/audio con lo stesso nome dell'MKV
     size_t owner = 0;           // indice dell'MKV a cui appartiene
     std::wstring error;         // vuoto = rinominabile
+    bool pendingCrc = false;    // anteprima: il CRC32 sarà calcolato al momento
 };
 struct RenameRules {
     std::wstring find, with;
+    std::wstring pattern = L"{name} [{crc}]";   // {name} = nome senza vecchio CRC, dopo trova/sostituisci
     bool ignoreCase = true;
     bool companions = true;
+    bool wantsCrc() const { return pattern.find(L"{crc}") != std::wstring::npos; }
 };
 std::vector<fs::path> listMkv(const fs::path& folder);
-std::vector<RenameItem> planRename(const std::vector<fs::path>& mkvs, const RenameRules& rules);
+// {crc}: valore in `crcs` (uno per MKV) se non vuoto, altrimenti il CRC già nel nome (rinominare non
+// cambia il contenuto); se manca anche quello l'elemento resta in attesa (pendingCrc, mostrato "CRC32").
+std::vector<RenameItem> planRename(const std::vector<fs::path>& mkvs, const RenameRules& rules,
+                                   const std::vector<std::wstring>* crcs = nullptr);
 // Rinomina senza mai sostituire file esistenti. Restituisce le coppie eseguite (per annullare).
 std::vector<std::pair<fs::path, fs::path>> applyRename(std::vector<RenameItem>& plan);
 

@@ -8,6 +8,10 @@
   seguono il video; nomi non validi o già presenti segnalati e saltati.
 - Opzione per aggiornare anche il titolo interno (mkvpropedit) e per usare la stessa
   sostituzione su `{name}` e titolo nel batch.
+- Struttura `nome [CRC32].mkv` (campo Nome, `{name} [{crc}]`): il vecchio CRC è tolto dal
+  nome e riusato senza rileggere il file; il CRC32 è calcolato solo se manca, se cambia
+  il titolo interno o con **Verifica i CRC già presenti**.
+- Nel batch `{name}` non contiene più il vecchio `[CRC]` del sorgente.
 
 ## 0.3.0 — 2026-10-24 — Editor dei flussi
 

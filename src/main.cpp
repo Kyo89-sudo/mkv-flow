@@ -35,7 +35,7 @@ enum : int {
     Tools = 300, ToolsBrowse, FastCopy, Exclusive, NoChapters, NoAttachments, NoTags,
     // Comuni
     // Rinomina
-    RenFolder = 350, RenBrowse, RenUseOutput, RenFind, RenWith, RenIgnoreCase, RenCompanions, RenTitle, RenBatch,
+    RenFolder = 350, RenBrowse, RenUseOutput, RenFind, RenWith, RenPattern, RenIgnoreCase, RenCompanions, RenTitle, RenVerify, RenBatch,
     RenPreview, RenApply, RenUndo, RenRefresh,
     LogBox = 400, Start, Cancel, ProgressBar, Status, NavQueue = 500, NavTracks, NavRename, NavSettings, NavLog,
 };
@@ -407,7 +407,8 @@ std::wstring readSetting(const wchar_t* key, const wchar_t* fallback) {
 void saveSettings() {
     if (settings.empty()) return;
     for (auto [id, key] : {std::pair{Tools, L"Tools"}, std::pair{Output, L"Output"}, std::pair{Pattern, L"Pattern"}, std::pair{LangFilter, L"Languages"},
-                           std::pair{RenFolder, L"RenameFolder"}, std::pair{RenFind, L"RenameFind"}, std::pair{RenWith, L"RenameWith"}})
+                           std::pair{RenFolder, L"RenameFolder"}, std::pair{RenFind, L"RenameFind"}, std::pair{RenWith, L"RenameWith"},
+                           std::pair{RenPattern, L"RenamePattern"}})
         WritePrivateProfileStringW(L"Settings", key, get(id).c_str(), settings.c_str());
     for (auto [id, key] : {std::pair{FastCopy, L"FastCopy"}, std::pair{Exclusive, L"ExclusiveDefault"}, std::pair{NoChapters, L"NoChapters"},
                            std::pair{NoAttachments, L"NoAttachments"}, std::pair{NoTags, L"NoGlobalTags"},
@@ -668,6 +669,7 @@ RenameRules renameRules() {
     RenameRules r;
     r.find = get(RenFind);
     r.with = get(RenWith);
+    r.pattern = get(RenPattern);
     r.ignoreCase = checked(RenIgnoreCase);
     r.companions = checked(RenCompanions);
     return r;
@@ -686,14 +688,13 @@ void showRenamePlan(const std::vector<RenameItem>& plan, bool done) {
         it.pszText = const_cast<wchar_t*>(from.c_str());
         ListView_InsertItem(list, &it);
         setRow(list, static_cast<int>(i), 1, item.to.filename().wstring());
-        setRow(list, static_cast<int>(i), 2, item.error.empty() ? (done ? L"✔ rinominato" : L"pronto") : L"✖ " + item.error);
+        setRow(list, static_cast<int>(i), 2, !item.error.empty() ? L"✖ " + item.error : done ? L"✔ rinominato" : item.pendingCrc ? L"CRC da calcolare" : L"pronto");
         if (item.error.empty()) ++ok;
     }
     SendMessageW(list, WM_SETREDRAW, TRUE, 0);
     EnableWindow(control(RenApply), !busy && !done && ok > 0);
     if (!done) {
-        if (get(RenFind).empty()) status(L"Rinomina: scrivere il testo da cercare, per esempio IsLAND");
-        else status(L"Rinomina: " + std::to_wstring(ok) + L" file pronti" +
+        status(L"Rinomina: " + std::to_wstring(ok) + L" file pronti" +
                     (ok < plan.size() ? L", " + std::to_wstring(plan.size() - ok) + L" con problemi" : L""));
     }
 }
@@ -710,41 +711,88 @@ void refreshRename() {
 }
 void renameNow() {
     refreshRename();  // la cartella potrebbe essere cambiata dall'ultima anteprima
+    auto rules = renameRules();
+    {
+        auto rest = rules.pattern;
+        for (auto token : {L"{name}", L"{crc}", L"{n}"}) {
+            size_t p;
+            while ((p = rest.find(token)) != rest.npos) rest.erase(p, wcslen(token));
+        }
+        if (rest.find_first_of(L"{}") != rest.npos) throw std::runtime_error("Nome: usare solo {name}, {crc} e {n}");
+        if (rules.pattern.find(L"{name}") == std::wstring::npos && rules.pattern.find(L"{n}") == std::wstring::npos)
+            throw std::runtime_error("Nome: inserire {name} o {n}, altrimenti tutti i file avrebbero lo stesso nome");
+    }
+    bool titles = checked(RenTitle), verify = checked(RenVerify);
     size_t ok = std::count_if(renamePlan.begin(), renamePlan.end(), [](const RenameItem& i) { return i.error.empty(); });
-    if (!ok) throw std::runtime_error("Nessun file da rinominare");
-    bool titles = checked(RenTitle);
+    size_t pending = std::count_if(renamePlan.begin(), renamePlan.end(), [](const RenameItem& i) { return i.error.empty() && i.pendingCrc && !i.companion; });
+    if (!ok && !verify) throw std::runtime_error("Nessun file da rinominare: i nomi sono già corretti");
     fs::path tools;
     if (titles) tools = toolsFolder();
-    auto question = L"Rinominare " + std::to_wstring(ok) + L" file in\n" + get(RenFolder) + L"?" +
-                    (titles ? L"\n\nAnche il titolo interno degli MKV verrà modificato nei file originali." : L"");
+    fs::path dir = get(RenFolder);
+    auto mkvs = listMkv(dir);
+    std::wstring question = ok ? L"Rinominare " + std::to_wstring(ok) + L" file in\n" + dir.wstring() + L"?" : L"Verificare i CRC in\n" + dir.wstring() + L"?";
+    if (verify) question += L"\n\nI CRC di tutti gli MKV verranno ricalcolati (rilettura completa dei file).";
+    else if (pending) question += L"\n\nPer " + std::to_wstring(pending) + L" file senza CRC nel nome il CRC32 verrà calcolato (rilettura del file).";
+    if (titles) question += L"\n\nAnche il titolo interno degli MKV verrà modificato nei file originali.";
     if (MessageBoxW(window, question.c_str(), L"MKV Flow", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
     saveSettings();
     auto plan = renamePlan;
-    auto rules = renameRules();
     renameRunning = true;
+    SendMessageW(control(ProgressBar), PBM_SETPOS, 0, 0);
     status(L"Rinomina in corso...");
-    emit(L"\r\nRinomina in " + get(RenFolder) + L": \"" + rules.find + L"\" → \"" + rules.with + L"\"");
-    runWorker([plan, rules, titles, tools]() mutable {
-        if (titles) {
-            for (auto& item : plan) {
-                if (cancelled) break;
-                if (item.companion || !item.error.empty()) continue;
+    emit(L"\r\nRinomina in " + dir.wstring() + L": \"" + rules.find + L"\" → \"" + rules.with + L"\", nome " + rules.pattern);
+    runWorker([plan, rules, titles, verify, tools, mkvs] {
+        std::vector<bool> changedContent(mkvs.size(), false), inPlan(mkvs.size(), false);
+        for (const auto& item : plan) if (!item.companion && item.error.empty()) inPlan[item.owner] = true;
+        // 1) Titolo interno: cambia il contenuto, quindi anche il CRC.
+        if (titles)
+            for (size_t i = 0; i < mkvs.size() && !cancelled; ++i) {
+                if (!inPlan[i]) continue;
                 try {
-                    auto title = analyze(tools, item.from, cancelled).title;
+                    auto title = analyze(tools, mkvs[i], cancelled).title;
                     auto fresh = replaceText(title, rules.find, rules.with, rules.ignoreCase);
                     if (fresh == title) continue;
-                    DWORD rc = run(tools / L"mkvpropedit.exe", {L"--output-charset", L"UTF-8", item.from.wstring(), L"--edit", L"info", L"--set", L"title=" + fresh},
+                    DWORD rc = run(tools / L"mkvpropedit.exe", {L"--output-charset", L"UTF-8", mkvs[i].wstring(), L"--edit", L"info", L"--set", L"title=" + fresh},
                                    cancelled, [](const std::wstring& line) { emit(L"  " + line); });
                     if (rc > 1) throw std::runtime_error("mkvpropedit ha segnalato un errore");
+                    changedContent[i] = true;
                     emit(L"Titolo: \"" + title + L"\" → \"" + fresh + L"\"");
                 } catch (const std::exception& e) {
-                    item.error = L"titolo non aggiornato: " + errorText(e);
-                    for (auto& c : plan) if (c.companion && c.owner == item.owner && c.error.empty()) c.error = L"il video non viene rinominato";
+                    emit(L"ERRORE titolo " + mkvs[i].filename().wstring() + L": " + errorText(e));
                 }
             }
+        // 2) CRC32: si riusa quello del nome; si legge il file solo se manca, se il contenuto
+        //    è cambiato o se è richiesta la verifica.
+        std::vector<std::wstring> crcs(mkvs.size());
+        std::vector<size_t> toRead;
+        for (size_t i = 0; i < mkvs.size(); ++i) {
+            bool missing = rules.wantsCrc() && existingCrc(mkvs[i].stem().wstring()).empty();
+            if (verify || changedContent[i] || (inPlan[i] && missing)) toRead.push_back(i);
         }
-        auto* result = new Renamed{plan, {}};
-        if (!cancelled) result->done = applyRename(result->plan);
+        size_t wrong = 0;
+        for (size_t k = 0; k < toRead.size() && !cancelled; ++k) {
+            size_t i = toRead[k];
+            try {
+                crcs[i] = crcFile(mkvs[i], cancelled);
+                auto old = existingCrc(mkvs[i].stem().wstring());
+                if (!old.empty() && old != crcs[i]) {
+                    ++wrong;
+                    emit(L"CRC diverso: " + mkvs[i].filename().wstring() + L" contiene " + crcs[i] +
+                         (changedContent[i] ? L" (titolo modificato)" : L" — il file NON corrisponde al CRC del nome"));
+                } else if (!old.empty()) emit(L"CRC corretto: " + mkvs[i].filename().wstring());
+                else emit(L"CRC calcolato: " + mkvs[i].filename().wstring() + L" → " + crcs[i]);
+            } catch (const std::exception& e) {
+                emit(L"ERRORE CRC " + mkvs[i].filename().wstring() + L": " + errorText(e));
+            }
+            PostMessageW(window, ProgressMessage, static_cast<WPARAM>((k + 1) * 1000 / toRead.size()), 0);
+        }
+        if (verify) emit(L"Verifica: " + std::to_wstring(toRead.size()) + L" file controllati, " + std::to_wstring(wrong) + L" con CRC diverso dal nome");
+        // 3) Piano definitivo con i CRC reali, poi rinomina (mai sovrascrivendo).
+        auto* result = new Renamed{{}, {}};
+        if (!cancelled) {
+            result->plan = planRename(mkvs, rules, &crcs);
+            result->done = applyRename(result->plan);
+        }
         for (const auto& [from, to] : result->done) emit(L"Rinominato: " + from.filename().wstring() + L" → " + to.filename().wstring());
         for (const auto& item : result->plan)
             if (!item.error.empty()) emit(L"Saltato: " + item.from.filename().wstring() + L" (" + item.error + L")");
@@ -755,7 +803,8 @@ void renamed(std::unique_ptr<Renamed> r) {
     lastRename = r->done;
     renamePlan = r->plan;
     showRenamePlan(renamePlan, true);
-    status(L"Rinominati " + std::to_wstring(r->done.size()) + L" file" + (r->done.size() < renamePlan.size() ? L"; alcuni saltati (vedi Log)" : L""));
+    status(L"Rinominati " + std::to_wstring(r->done.size()) + L" file" + (r->done.size() < renamePlan.size() ? L"; alcuni saltati (vedi Log)" : L"") +
+           L" — dettagli nel Log");
 }
 void undoRename() {
     if (busy || lastRename.empty()) return;
@@ -852,7 +901,7 @@ void command(int id, int code) {
     case RenBrowse: { auto p = folder(); if (!p.empty()) { put(RenFolder, p); refreshRename(); } break; }
     case RenUseOutput: put(RenFolder, get(Output)); refreshRename(); break;
     case RenRefresh: refreshRename(); break;
-    case RenFind: case RenWith: if (code == EN_CHANGE) refreshRename(); break;
+    case RenFind: case RenWith: case RenPattern: if (code == EN_CHANGE) refreshRename(); break;
     case RenIgnoreCase: case RenCompanions: if (code == BN_CLICKED) refreshRename(); break;
     case RenApply: renameNow(); break;
     case RenUndo: undoRename(); break;
@@ -959,11 +1008,15 @@ void build() {
     edit(L"", RenFind, 76, 114, 250);
     label(L"Sostituisci con", 338, 118, 104);
     edit(L"", RenWith, 446, 114, 302, GrowW);
-    checkbox(L"Ignora maiuscole/minuscole", RenIgnoreCase, 12, 148, 210);
-    checkbox(L"Rinomina anche sottotitoli e audio con lo stesso nome", RenCompanions, 228, 148, 520, GrowW);
-    checkbox(L"Aggiorna anche il titolo interno degli MKV (mkvpropedit, modifica i file)", RenTitle, 12, 174, 736, GrowW);
-    checkbox(L"Usa la stessa sostituzione per i nomi e i titoli creati dal batch", RenBatch, 12, 200, 736, GrowW);
-    listView(RenPreview, 12, 230, 736, 200, 0, 0, {{L"Nome attuale", 300}, {L"Nuovo nome", 300}, {L"Stato", 120}});
+    label(L"Nome", 12, 152, 60);
+    edit(L"{name} [{crc}]", RenPattern, 76, 148, 250);
+    label(L"{name} nome senza vecchio CRC  ·  {crc} CRC32  ·  {n} numero", 338, 152, 410, GrowW);
+    checkbox(L"Ignora maiuscole/minuscole", RenIgnoreCase, 12, 180, 210);
+    checkbox(L"Rinomina anche sottotitoli e audio con lo stesso nome", RenCompanions, 228, 180, 520, GrowW);
+    checkbox(L"Verifica i CRC già presenti nel nome (rilegge i file)", RenVerify, 12, 204, 736, GrowW);
+    checkbox(L"Aggiorna anche il titolo interno degli MKV (mkvpropedit, modifica i file e il CRC)", RenTitle, 12, 228, 736, GrowW);
+    checkbox(L"Usa la stessa sostituzione per i nomi e i titoli creati dal batch", RenBatch, 12, 252, 736, GrowW);
+    listView(RenPreview, 12, 280, 736, 150, 0, 0, {{L"Nome attuale", 300}, {L"Nuovo nome", 300}, {L"Stato", 120}});
     button(L"Rinomina", RenApply, 12, 440, 120, MoveY);
     button(L"Annulla ultima rinomina", RenUndo, 136, 440, 184, MoveY);
     button(L"Aggiorna anteprima", RenRefresh, 324, 440, 150, MoveY);
@@ -1020,6 +1073,7 @@ void build() {
     put(RenFolder, readSetting(L"RenameFolder", L""));
     put(RenFind, readSetting(L"RenameFind", L""));
     put(RenWith, readSetting(L"RenameWith", L""));
+    put(RenPattern, readSetting(L"RenamePattern", L"{name} [{crc}]"));
     check(RenIgnoreCase, readSetting(L"RenameIgnoreCase", L"1") == L"1");
     check(RenCompanions, readSetting(L"RenameCompanions", L"1") == L"1");
     EnableWindow(control(RenUndo), FALSE);
