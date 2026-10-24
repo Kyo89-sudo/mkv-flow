@@ -11,8 +11,8 @@
 
 - Nuova scheda **Rinomina**: trova/sostituisci nei nomi di tutti gli MKV di una
   cartella (es. `-IsLAND` → `-MIRCrew`), con anteprima, conferma e annullamento.
-- Rinomina sul posto senza sovrascrivere; sottotitoli e audio con lo stesso nome
-  seguono il video; nomi non validi o già presenti segnalati e saltati.
+- Rinomina sul posto senza sovrascrivere, solo i file MKV; nomi non validi o già
+  presenti segnalati e saltati.
 - Opzione per aggiornare anche il titolo interno (mkvpropedit) e per usare la stessa
   sostituzione su `{name}` e titolo nel batch.
 

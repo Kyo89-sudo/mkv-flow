@@ -35,7 +35,7 @@ enum : int {
     Tools = 300, ToolsBrowse, FastCopy, Exclusive, NoChapters, NoAttachments, NoTags,
     // Comuni
     // Rinomina
-    RenFolder = 350, RenBrowse, RenUseOutput, RenFind, RenWith, RenPattern, RenIgnoreCase, RenCompanions, RenTitle, RenVerify, RenBatch,
+    RenFolder = 350, RenBrowse, RenUseOutput, RenFind, RenWith, RenPattern, RenIgnoreCase, RenTitle, RenVerify, RenBatch,
     RenPreview, RenApply, RenUndo, RenRefresh,
     LogBox = 400, Start, Cancel, ProgressBar, Status, NavQueue = 500, NavTracks, NavRename, NavSettings, NavLog,
 };
@@ -412,7 +412,7 @@ void saveSettings() {
         WritePrivateProfileStringW(L"Settings", key, get(id).c_str(), settings.c_str());
     for (auto [id, key] : {std::pair{FastCopy, L"FastCopy"}, std::pair{Exclusive, L"ExclusiveDefault"}, std::pair{NoChapters, L"NoChapters"},
                            std::pair{NoAttachments, L"NoAttachments"}, std::pair{NoTags, L"NoGlobalTags"},
-                           std::pair{RenIgnoreCase, L"RenameIgnoreCase"}, std::pair{RenCompanions, L"RenameCompanions"}})
+                           std::pair{RenIgnoreCase, L"RenameIgnoreCase"}})
         WritePrivateProfileStringW(L"Settings", key, checked(id) ? L"1" : L"0", settings.c_str());
 }
 fs::path toolsFolder() {
@@ -671,7 +671,7 @@ RenameRules renameRules() {
     r.with = get(RenWith);
     r.pattern = get(RenPattern);
     r.ignoreCase = checked(RenIgnoreCase);
-    r.companions = checked(RenCompanions);
+    r.companions = false;  // si rinominano solo gli MKV
     return r;
 }
 void showRenamePlan(const std::vector<RenameItem>& plan, bool done) {
@@ -902,7 +902,7 @@ void command(int id, int code) {
     case RenUseOutput: put(RenFolder, get(Output)); refreshRename(); break;
     case RenRefresh: refreshRename(); break;
     case RenFind: case RenWith: case RenPattern: if (code == EN_CHANGE) refreshRename(); break;
-    case RenIgnoreCase: case RenCompanions: if (code == BN_CLICKED) refreshRename(); break;
+    case RenIgnoreCase: if (code == BN_CLICKED) refreshRename(); break;
     case RenApply: renameNow(); break;
     case RenUndo: undoRename(); break;
     case Start: start(); break;
@@ -1012,7 +1012,6 @@ void build() {
     edit(L"{name} [{crc}]", RenPattern, 76, 148, 250);
     label(L"{name} nome senza vecchio CRC  ·  {crc} CRC32  ·  {n} numero", 338, 152, 410, GrowW);
     checkbox(L"Ignora maiuscole/minuscole", RenIgnoreCase, 12, 180, 210);
-    checkbox(L"Rinomina anche sottotitoli e audio con lo stesso nome", RenCompanions, 228, 180, 520, GrowW);
     checkbox(L"Verifica i CRC già presenti nel nome (rilegge i file)", RenVerify, 12, 204, 736, GrowW);
     checkbox(L"Aggiorna anche il titolo interno degli MKV (mkvpropedit, modifica i file e il CRC)", RenTitle, 12, 228, 736, GrowW);
     checkbox(L"Usa la stessa sostituzione per i nomi e i titoli creati dal batch", RenBatch, 12, 252, 736, GrowW);
@@ -1075,7 +1074,6 @@ void build() {
     put(RenWith, readSetting(L"RenameWith", L""));
     put(RenPattern, readSetting(L"RenamePattern", L"{name} [{crc}]"));
     check(RenIgnoreCase, readSetting(L"RenameIgnoreCase", L"1") == L"1");
-    check(RenCompanions, readSetting(L"RenameCompanions", L"1") == L"1");
     EnableWindow(control(RenUndo), FALSE);
     DragAcceptFiles(window, TRUE);
     showPage(PageQueue);

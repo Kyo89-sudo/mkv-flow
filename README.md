@@ -61,7 +61,7 @@ tutti con **Verifica i CRC già presenti**, che segnala nel Log i nomi con CRC s
 
 - Lavora sul posto: nessuna copia, nessun remux, i file esistenti non vengono mai
   sovrascritti (un nome già presente è segnalato e quel file viene saltato).
-- Sottotitoli e audio con lo stesso nome (`S01E01-IsLAND.ita.srt`) seguono il video.
+- Si rinominano solo i file MKV: sottotitoli e audio nella cartella non vengono toccati.
 - Facoltativo: **Aggiorna anche il titolo interno** applica la stessa sostituzione al
   titolo del contenitore con `mkvpropedit` (modifica i file originali; non annullabile).
 - Facoltativo: la stessa sostituzione può valere per `{name}` e per il titolo nel batch,
