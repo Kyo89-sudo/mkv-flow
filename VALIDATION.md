@@ -73,4 +73,3 @@
   né prova su monitor con DPI differenti o file MKV video di grandi dimensioni.
 - La workflow GitHub della 0.1.0 è stata eseguita con successo.
 - Il programma e i pacchetti non sono firmati digitalmente.
-
