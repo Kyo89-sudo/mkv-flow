@@ -199,6 +199,50 @@ void unitTests() {
     require(found.size() == 2 && found[0].filename() == L"Ep 1 [eng].srt" && found[1].filename() == L"Ep 1.ita.ac3", "companions");
     std::error_code ec;
     fs::remove_all(dir, ec);
+    // --- Sostituzione applicata ai nomi del batch
+    Options ro;
+    ro.replaceFind = L"island";
+    ro.replaceWith = L"MIRCrew";
+    ro.setTitle = true;
+    ro.title = L"{name}";
+    Job rj = episode(L"S01E01-IsLAND.mkv");
+    require(outputStem(rj, ro) == L"S01E01-MIRCrew", "output stem replace");
+    require(after(propeditArgs(rj, L"t.mkv", ro, 1), L"--set") == L"title=S01E01-MIRCrew", "title uses replaced name");
+    require(after(mergeArgs(rj, L"t.mkv", ro, 1), L"--title") == L"S01E01-MIRCrew", "merge title uses replaced name");
+
+    // --- Rinomina sul posto
+    require(replaceText(L"S01E01-IsLAND", L"island", L"MIRCrew", true) == L"S01E01-MIRCrew", "replace ignore case");
+    require(replaceText(L"S01E01-IsLAND", L"island", L"MIRCrew", false) == L"S01E01-IsLAND", "replace case sensitive");
+    require(replaceText(L"a.a.a", L"a", L"aa", false) == L"aa.aa.aa", "replace non recursive");
+    auto rdir = fs::temp_directory_path() / (L"mkvflow-rename-" + std::to_wstring(GetCurrentProcessId()));
+    fs::create_directories(rdir);
+    for (auto name : {L"S01E01-IsLAND.mkv", L"S01E01-IsLAND.ita.srt", L"S01E02-IsLAND.mkv", L"S01E02-IsLAND.mkv.bak",
+                      L"S01E03-ISLAND.mkv", L"S01E03-MIRCrew.mkv", L"S01E03-ISLAND.eng.srt", L"Extra.mkv"})
+        std::ofstream(rdir / name) << "x";
+    auto mkvs = listMkv(rdir);
+    require(mkvs.size() == 5, "list mkv");
+    RenameRules rules;
+    rules.find = L"IsLAND";
+    rules.with = L"MIRCrew";
+    auto plan = planRename(mkvs, rules);
+    auto entry = [&](const wchar_t* from) -> const RenameItem* {
+        for (const auto& i : plan) if (i.from.filename() == from) return &i;
+        return nullptr;
+    };
+    require(plan.size() == 5, "plan size");
+    require(entry(L"S01E01-IsLAND.mkv") && entry(L"S01E01-IsLAND.mkv")->to.filename() == L"S01E01-MIRCrew.mkv" && entry(L"S01E01-IsLAND.mkv")->error.empty(), "plan mkv");
+    require(entry(L"S01E01-IsLAND.ita.srt") && entry(L"S01E01-IsLAND.ita.srt")->companion && entry(L"S01E01-IsLAND.ita.srt")->to.filename() == L"S01E01-MIRCrew.ita.srt", "plan companion");
+    require(entry(L"S01E03-ISLAND.mkv") && !entry(L"S01E03-ISLAND.mkv")->error.empty(), "collision with existing");
+    require(entry(L"S01E03-ISLAND.eng.srt") && !entry(L"S01E03-ISLAND.eng.srt")->error.empty(), "companion follows failed video");
+    require(!entry(L"Extra.mkv") && !entry(L"S01E02-IsLAND.mkv.bak"), "untouched files");
+    rules.with = L"bad:name";
+    require(!planRename(mkvs, rules).front().error.empty(), "invalid characters");
+    rules.with = L"MIRCrew";
+    rules.companions = false;
+    require(planRename(mkvs, rules).size() == 3, "without companions");
+    rules.find.clear();
+    require(planRename(mkvs, rules).empty(), "empty find");
+    fs::remove_all(rdir, ec);
 }
 
 void processTests(const wchar_t* self) {
@@ -213,6 +257,23 @@ void processTests(const wchar_t* self) {
     try { run(self, {L"--child", L"sleep", L"x"}, cancel, [](auto) {}); } catch (...) { aborted = true; }
     stop.join();
     require(aborted, "active process cancellation");
+    // Rinomina reale: nessuna sovrascrittura, annullabile.
+    auto rdir = fs::temp_directory_path() / (L"mkvflow-rename-run-" + std::to_wstring(GetCurrentProcessId()));
+    fs::create_directories(rdir);
+    for (auto name : {L"S01E01-IsLAND.mkv", L"S01E01-IsLAND.srt", L"S01E02-island.mkv"}) std::ofstream(rdir / name) << name[5];
+    RenameRules rules;
+    rules.find = L"island";
+    rules.with = L"MIRCrew";
+    auto plan = planRename(listMkv(rdir), rules);
+    auto done = applyRename(plan);
+    require(done.size() == 3 && fs::exists(rdir / L"S01E01-MIRCrew.mkv") && fs::exists(rdir / L"S01E01-MIRCrew.srt") && fs::exists(rdir / L"S01E02-MIRCrew.mkv"), "rename applied");
+    require(!fs::exists(rdir / L"S01E01-IsLAND.mkv"), "old name gone");
+    std::ofstream(rdir / L"S01E01-IsLAND.mkv") << "nuovo";
+    std::vector<RenameItem> undo{{rdir / L"S01E01-MIRCrew.mkv", rdir / L"S01E01-IsLAND.mkv", false, 0, {}}};
+    require(applyRename(undo).empty() && !undo[0].error.empty(), "rename never replaces");
+    std::error_code rec;
+    fs::remove_all(rdir, rec);
+
 }
 
 void integrationTests(const fs::path& tools, const fs::path& rootArg) {

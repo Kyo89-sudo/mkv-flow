@@ -1,3 +1,11 @@
+# Verifica 0.4.0 — 24 ottobre 2026
+
+- Test core per trova/sostituisci, piano di rinomina (file affiancati, collisioni,
+  nomi non validi, maiuscole), sostituzione nei nomi e titoli del batch; eseguiti
+  su Windows in CI e su Linux con stub Win32 e ASan/UBSan.
+- Test Windows della rinomina reale: nomi applicati e mai sovrascritti.
+- Non verificati a mano: scheda Rinomina nella GUI e aggiornamento del titolo interno.
+
 # Verifica 0.3.0 — 24 ottobre 2026
 
 - GitHub Actions (windows-latest, MSVC v143, `/warnaserror`): build Release x64 riuscita.

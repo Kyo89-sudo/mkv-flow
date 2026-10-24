@@ -4,7 +4,7 @@
 
 **Flussi, rinomina, verifica.** Una piccola GUI nativa Windows per modificare i
 flussi video, audio e sottotitoli di file MKV in batch, senza ricodifica.
-C++17 e Win32; nessun runtime Python, Electron, .NET o Qt. Versione **0.3.0**,
+C++17 e Win32; nessun runtime Python, Electron, .NET o Qt. Versione **0.4.0**,
 interfaccia in italiano.
 
 ## Novità 0.3: editor dei flussi
@@ -40,6 +40,24 @@ scheda **Flussi** che mostra le tracce reali del file, lette con `mkvmerge -J`:
 Se cambiano soltanto nomi, lingue o flag, il file è copiato e modificato con
 `mkvpropedit` (veloce). Rimozioni, riordino, tracce esterne e ritardi richiedono un
 remux con `mkvmerge`, sempre senza ricodificare audio o video.
+
+## Rinomina episodi (0.4)
+
+La scheda **Rinomina** cambia i nomi dei file di una cartella con un trova/sostituisci,
+per esempio da `S01E01-IsLAND.mkv` a `S01E01-MIRCrew.mkv` per tutta la stagione:
+
+1. Scegliere la cartella (o **Usa output** per quella del batch).
+2. **Trova** `IsLAND`, **Sostituisci con** `MIRCrew`. L'anteprima mostra subito
+   *nome attuale → nuovo nome* e gli eventuali problemi.
+3. **Rinomina**, poi confermare. **Annulla ultima rinomina** rimette i nomi di prima.
+
+- Lavora sul posto: nessuna copia, nessun remux, i file esistenti non vengono mai
+  sovrascritti (un nome già presente è segnalato e quel file viene saltato).
+- Sottotitoli e audio con lo stesso nome (`S01E01-IsLAND.ita.srt`) seguono il video.
+- Facoltativo: **Aggiorna anche il titolo interno** applica la stessa sostituzione al
+  titolo del contenitore con `mkvpropedit` (modifica i file originali; non annullabile).
+- Facoltativo: la stessa sostituzione può valere per `{name}` e per il titolo nel batch,
+  così l'output esce già con il nuovo gruppo.
 
 ## Funzioni
 
@@ -102,7 +120,7 @@ Lingue: `ita`, `eng`, `jpn` o tag BCP 47 supportati da MKVToolNix (`pt-BR`).
 Ritardo in millisecondi, anche negativo. `{crc}` è ammesso solo nel nome file:
 nel titolo cambierebbe di nuovo il checksum.
 
-## Comportamento e limiti della 0.3
+## Comportamento e limiti
 
 - Un file alla volta, su thread di lavoro; la finestra resta reattiva.
 - Gli avvisi MKVToolNix (exit code 1) sono segnalati e l'output viene conservato.

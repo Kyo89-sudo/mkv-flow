@@ -301,6 +301,10 @@ std::wstring fileName(const std::wstring& text) {
     return text + L".mkv";
 }
 
+std::wstring outputStem(const Job& job, const Options& o) {
+    return replaceText(job.input().stem().wstring(), o.replaceFind, o.replaceWith, o.replaceIgnoreCase);
+}
+
 bool validLanguage(const std::wstring& code) {
     return code.empty() || std::regex_match(code, std::wregex(L"[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*"));
 }
@@ -637,7 +641,7 @@ bool needsRemux(const Job& job, const Options& o) {
 
 std::vector<std::wstring> mergeArgs(const Job& job, const fs::path& out, const Options& o, size_t index) {
     std::vector<std::wstring> a{L"--output-charset", L"UTF-8", L"--gui-mode", L"-o", out.wstring()};
-    if (o.setTitle) a.insert(a.end(), {L"--title", expand(o.title, job.input().stem().wstring(), index, L"")});
+    if (o.setTitle) a.insert(a.end(), {L"--title", expand(o.title, outputStem(job, o), index, L"")});
     std::vector<int> fileIndex(job.sources.size(), -1);
     int nextFile = 0;
     for (size_t s = 0; s < job.sources.size(); ++s) {
@@ -689,7 +693,7 @@ std::vector<std::wstring> mergeArgs(const Job& job, const fs::path& out, const O
 std::vector<std::wstring> propeditArgs(const Job& job, const fs::path& file, const Options& o, size_t index) {
     std::vector<std::wstring> a{L"--output-charset", L"UTF-8", L"--gui-mode", file.wstring()};
     if (o.setTitle)
-        a.insert(a.end(), {L"--edit", L"info", L"--set", L"title=" + expand(o.title, job.input().stem().wstring(), index, L"")});
+        a.insert(a.end(), {L"--edit", L"info", L"--set", L"title=" + expand(o.title, outputStem(job, o), index, L"")});
     for (const auto& e : job.tracks) {
         if (e.source != 0) continue;
         const auto& st = job.sourceTrack(e);
@@ -908,7 +912,7 @@ fs::path process(const Job& job, size_t index, const Options& o, std::atomic_boo
     if (progress) progress(100);
     log(L"Calcolo CRC32 sul file finale...");
     auto crc = crcFile(stage, cancel);
-    auto target = o.output / fileName(expand(o.pattern, job.input().stem().wstring(), index, crc));
+    auto target = o.output / fileName(expand(o.pattern, outputStem(job, o), index, crc));
     checkCancel(cancel);
     // Rinomina nella stessa cartella SENZA sostituzione: collisioni e originali restano protetti.
     if (!MoveFileExW(stage.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
@@ -916,4 +920,98 @@ fs::path process(const Job& job, size_t index, const Options& o, std::atomic_boo
     log(L"CRC32: " + crc + (warning ? L" — COMPLETATO CON AVVISI: verificare il log" : L" — completato"));
     return target;
 }
+// ---------------------------------------------------------------------------
+// Rinomina sul posto
+// ---------------------------------------------------------------------------
+std::wstring replaceText(const std::wstring& text, const std::wstring& find, const std::wstring& with, bool ignoreCase) {
+    if (find.empty()) return text;
+    auto hay = ignoreCase ? lower(text) : text;
+    auto needle = ignoreCase ? lower(find) : find;
+    std::wstring out;
+    size_t p = 0, q;
+    while ((q = hay.find(needle, p)) != hay.npos) {
+        out.append(text, p, q - p);
+        out += with;
+        p = q + needle.size();
+    }
+    return out + text.substr(p);
+}
+
+namespace {
+std::wstring nameProblem(const std::wstring& name) {
+    if (name.empty() || name.size() > 240 || name.back() == L'.' || name.back() == L' ') return L"nome vuoto, troppo lungo o con punto/spazio finale";
+    for (wchar_t c : name)
+        if (c < 32 || std::wstring(L"<>:\"/\\|?*").find(c) != std::wstring::npos) return L"carattere non valido nel nome";
+    auto base = name.substr(0, name.find(L'.'));
+    std::transform(base.begin(), base.end(), base.begin(), towupper);
+    if (std::regex_match(base, std::wregex(L"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]"))) return L"nome riservato da Windows";
+    return {};
+}
+}  // namespace
+
+std::vector<fs::path> listMkv(const fs::path& folder) {
+    std::vector<fs::path> found;
+    std::error_code ec;
+    for (fs::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec)) {
+        std::error_code e2;
+        if (it->is_regular_file(e2) && lower(it->path().extension().wstring()) == L".mkv") found.push_back(it->path());
+    }
+    if (ec) fail(L"Impossibile leggere la cartella: " + folder.wstring());
+    std::sort(found.begin(), found.end(), [](const fs::path& a, const fs::path& b) { return _wcsicmp(a.wstring().c_str(), b.wstring().c_str()) < 0; });
+    return found;
+}
+
+std::vector<RenameItem> planRename(const std::vector<fs::path>& mkvs, const RenameRules& rules) {
+    std::vector<RenameItem> plan;
+    if (rules.find.empty()) return plan;
+    // Un file affiancato appartiene all'MKV con il nome più lungo che lo precede:
+    // "Ep 1 parte 2.srt" va con "Ep 1 parte 2.mkv", non con "Ep 1.mkv".
+    std::vector<std::pair<fs::path, size_t>> owners;
+    if (rules.companions)
+        for (size_t i = 0; i < mkvs.size(); ++i)
+            for (const auto& c : findCompanions(mkvs[i])) {
+                auto it = std::find_if(owners.begin(), owners.end(), [&](const auto& o) { return sameFile(o.first, c); });
+                if (it == owners.end()) owners.push_back({c, i});
+                else if (mkvs[i].stem().wstring().size() > mkvs[it->second].stem().wstring().size()) it->second = i;
+            }
+    for (size_t i = 0; i < mkvs.size(); ++i) {
+        auto stem = mkvs[i].stem().wstring();
+        auto newStem = replaceText(stem, rules.find, rules.with, rules.ignoreCase);
+        if (newStem == stem) continue;
+        RenameItem item{mkvs[i], mkvs[i].parent_path() / (newStem + mkvs[i].extension().wstring()), false, i, {}};
+        item.error = nameProblem(item.to.filename().wstring());
+        plan.push_back(item);
+        for (const auto& [file, owner] : owners) {
+            if (owner != i) continue;
+            auto rest = file.filename().wstring().substr(stem.size());
+            RenameItem c{file, file.parent_path() / (newStem + rest), true, i, {}};
+            c.error = nameProblem(c.to.filename().wstring());
+            plan.push_back(c);
+        }
+    }
+    std::set<std::wstring> targets;
+    for (auto& item : plan) {
+        if (!targets.insert(lower(item.to.wstring())).second && item.error.empty()) item.error = L"un altro file avrebbe lo stesso nome";
+        std::error_code ec;
+        if (item.error.empty() && !sameFile(item.from, item.to) && fs::exists(item.to, ec)) item.error = L"esiste già un file con questo nome";
+    }
+    // Se l'MKV non si può rinominare, i suoi file affiancati restano com'erano.
+    for (const auto& item : plan)
+        if (!item.companion && !item.error.empty())
+            for (auto& c : plan)
+                if (c.companion && c.owner == item.owner && c.error.empty()) c.error = L"il video non viene rinominato";
+    return plan;
+}
+
+std::vector<std::pair<fs::path, fs::path>> applyRename(std::vector<RenameItem>& plan) {
+    std::vector<std::pair<fs::path, fs::path>> done;
+    for (auto& item : plan) {
+        if (!item.error.empty()) continue;
+        // Nessun MOVEFILE_REPLACE_EXISTING: un file esistente non viene mai sovrascritto.
+        if (MoveFileExW(item.from.c_str(), item.to.c_str(), 0)) done.push_back({item.from, item.to});
+        else item.error = L"rinomina fallita (errore Windows " + std::to_wstring(GetLastError()) + L")";
+    }
+    return done;
+}
+
 }  // namespace app

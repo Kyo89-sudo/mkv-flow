@@ -34,12 +34,17 @@ enum : int {
     // Impostazioni
     Tools = 300, ToolsBrowse, FastCopy, Exclusive, NoChapters, NoAttachments, NoTags,
     // Comuni
-    LogBox = 400, Start, Cancel, ProgressBar, Status, NavQueue = 500, NavTracks, NavSettings, NavLog,
+    // Rinomina
+    RenFolder = 350, RenBrowse, RenUseOutput, RenFind, RenWith, RenIgnoreCase, RenCompanions, RenTitle, RenBatch,
+    RenPreview, RenApply, RenUndo, RenRefresh,
+    LogBox = 400, Start, Cancel, ProgressBar, Status, NavQueue = 500, NavTracks, NavRename, NavSettings, NavLog,
 };
 constexpr UINT LogMessage = WM_APP + 1, DoneMessage = WM_APP + 2, AnalyzedMessage = WM_APP + 3,
-               ProgressMessage = WM_APP + 4, StateMessage = WM_APP + 5, LangCodeMessage = WM_APP + 6;
+               ProgressMessage = WM_APP + 4, StateMessage = WM_APP + 5, LangCodeMessage = WM_APP + 6,
+               RenamedMessage = WM_APP + 7;
 constexpr int BaseWidth = 760, BaseHeight = 540;
 enum Anchor { MoveX = 1, MoveY = 2, GrowW = 4, GrowH = 8 };
+enum Page { PageQueue, PageTracks, PageRename, PageSettings, PageLog, PageCount };
 
 struct Item {
     Job job;
@@ -65,7 +70,9 @@ int current = -1;                       // file aperto nella scheda Flussi
 std::optional<Template> model;          // layout applicato a tutto il batch
 std::thread worker;
 std::atomic_bool cancelled = false;
-bool busy = false, closeAfter = false, startAfterAnalysis = false, filling = false, batchRunning = false;
+bool busy = false, closeAfter = false, startAfterAnalysis = false, filling = false, batchRunning = false, renameRunning = false;
+std::vector<RenameItem> renamePlan;
+std::vector<std::pair<fs::path, fs::path>> lastRename;   // per annullare
 fs::path settings;
 int currentPage = 0, buildingPage = -1;
 
@@ -173,12 +180,13 @@ void layout() {
     if (batch) EndDeferWindowPos(batch);
     fitColumn(Queue, 0);
     fitColumn(Tracks, 4);
+    fitColumn(RenPreview, 1);
 }
 
 void showPage(int page) {
     currentPage = page;
     for (const auto& c : controls) ShowWindow(c.h, c.page < 0 || c.page == page ? SW_SHOW : SW_HIDE);
-    for (int i = 0; i < 4; ++i) check(NavQueue + i, i == page);
+    for (int i = 0; i < PageCount; ++i) check(NavQueue + i, i == page);
 }
 
 // ---------------------------------------------------------------------------
@@ -398,10 +406,12 @@ std::wstring readSetting(const wchar_t* key, const wchar_t* fallback) {
 }
 void saveSettings() {
     if (settings.empty()) return;
-    for (auto [id, key] : {std::pair{Tools, L"Tools"}, std::pair{Output, L"Output"}, std::pair{Pattern, L"Pattern"}, std::pair{LangFilter, L"Languages"}})
+    for (auto [id, key] : {std::pair{Tools, L"Tools"}, std::pair{Output, L"Output"}, std::pair{Pattern, L"Pattern"}, std::pair{LangFilter, L"Languages"},
+                           std::pair{RenFolder, L"RenameFolder"}, std::pair{RenFind, L"RenameFind"}, std::pair{RenWith, L"RenameWith"}})
         WritePrivateProfileStringW(L"Settings", key, get(id).c_str(), settings.c_str());
     for (auto [id, key] : {std::pair{FastCopy, L"FastCopy"}, std::pair{Exclusive, L"ExclusiveDefault"}, std::pair{NoChapters, L"NoChapters"},
-                           std::pair{NoAttachments, L"NoAttachments"}, std::pair{NoTags, L"NoGlobalTags"}})
+                           std::pair{NoAttachments, L"NoAttachments"}, std::pair{NoTags, L"NoGlobalTags"},
+                           std::pair{RenIgnoreCase, L"RenameIgnoreCase"}, std::pair{RenCompanions, L"RenameCompanions"}})
         WritePrivateProfileStringW(L"Settings", key, checked(id) ? L"1" : L"0", settings.c_str());
 }
 fs::path toolsFolder() {
@@ -421,6 +431,11 @@ Options options() {
     o.noChapters = checked(NoChapters);
     o.noAttachments = checked(NoAttachments);
     o.noGlobalTags = checked(NoTags);
+    if (checked(RenBatch)) {
+        o.replaceFind = get(RenFind);
+        o.replaceWith = get(RenWith);
+        o.replaceIgnoreCase = checked(RenIgnoreCase);
+    }
     if (!o.output.is_absolute()) throw std::runtime_error("Scegliere nella scheda Coda un percorso assoluto per la cartella output");
     if (o.pattern.find(L"{crc}") == o.pattern.npos) throw std::runtime_error("Il modello nome deve contenere {crc}");
     auto validateTokens = [](std::wstring s, bool title) {
@@ -433,7 +448,7 @@ Options options() {
     };
     validateTokens(o.pattern, false);
     if (o.setTitle) validateTokens(o.title, true);
-    for (size_t i = 0; i < items.size(); ++i) fileName(expand(o.pattern, items[i].job.input().stem().wstring(), i + 1, L"00000000"));
+    for (size_t i = 0; i < items.size(); ++i) fileName(expand(o.pattern, outputStem(items[i].job, o), i + 1, L"00000000"));
     return o;
 }
 
@@ -443,8 +458,9 @@ Options options() {
 void setBusy(bool value) {
     busy = value;
     for (const auto& c : controls) if (GetDlgCtrlID(c.h) > 0) EnableWindow(c.h, !value);
-    for (int id : {LogBox, NavQueue, NavTracks, NavSettings, NavLog, Status, ProgressBar}) EnableWindow(control(id), TRUE);
+    for (int id : {LogBox, NavQueue, NavTracks, NavRename, NavSettings, NavLog, Status, ProgressBar}) EnableWindow(control(id), TRUE);
     EnableWindow(control(Cancel), value);
+    EnableWindow(control(RenUndo), !value && !lastRename.empty());
     if (!value) fillPanel();
 }
 void runWorker(std::function<void()> body) {
@@ -634,16 +650,132 @@ void openJob(int index) {
     current = index;
     SendMessageW(control(JobCombo), CB_SETCURSEL, current, 0);
     fillTracks();
-    showPage(1);
+    showPage(PageTracks);
     if (!items[current].job.sources.front().analyzed && !busy) {
         try { toolsFolder(); launchAnalysis({{static_cast<size_t>(current), 0, items[current].job.input()}}); }
         catch (const std::exception& e) { status(errorText(e)); }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Rinomina sul posto
+// ---------------------------------------------------------------------------
+struct Renamed {
+    std::vector<RenameItem> plan;
+    std::vector<std::pair<fs::path, fs::path>> done;
+};
+RenameRules renameRules() {
+    RenameRules r;
+    r.find = get(RenFind);
+    r.with = get(RenWith);
+    r.ignoreCase = checked(RenIgnoreCase);
+    r.companions = checked(RenCompanions);
+    return r;
+}
+void showRenamePlan(const std::vector<RenameItem>& plan, bool done) {
+    HWND list = control(RenPreview);
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    size_t ok = 0;
+    for (size_t i = 0; i < plan.size(); ++i) {
+        const auto& item = plan[i];
+        LVITEMW it{};
+        it.mask = LVIF_TEXT;
+        it.iItem = static_cast<int>(i);
+        auto from = (item.companion ? L"   ↳ " : L"") + item.from.filename().wstring();
+        it.pszText = const_cast<wchar_t*>(from.c_str());
+        ListView_InsertItem(list, &it);
+        setRow(list, static_cast<int>(i), 1, item.to.filename().wstring());
+        setRow(list, static_cast<int>(i), 2, item.error.empty() ? (done ? L"✔ rinominato" : L"pronto") : L"✖ " + item.error);
+        if (item.error.empty()) ++ok;
+    }
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    EnableWindow(control(RenApply), !busy && !done && ok > 0);
+    if (!done) {
+        if (get(RenFind).empty()) status(L"Rinomina: scrivere il testo da cercare, per esempio IsLAND");
+        else status(L"Rinomina: " + std::to_wstring(ok) + L" file pronti" +
+                    (ok < plan.size() ? L", " + std::to_wstring(plan.size() - ok) + L" con problemi" : L""));
+    }
+}
+void refreshRename() {
+    if (busy) return;
+    renamePlan.clear();
+    fs::path dir = get(RenFolder);
+    std::error_code ec;
+    if (!dir.empty() && dir.is_absolute() && fs::is_directory(dir, ec)) {
+        try { renamePlan = planRename(listMkv(dir), renameRules()); }
+        catch (const std::exception& e) { status(errorText(e)); }
+    } else if (!dir.empty()) status(L"Rinomina: cartella non trovata");
+    showRenamePlan(renamePlan, false);
+}
+void renameNow() {
+    refreshRename();  // la cartella potrebbe essere cambiata dall'ultima anteprima
+    size_t ok = std::count_if(renamePlan.begin(), renamePlan.end(), [](const RenameItem& i) { return i.error.empty(); });
+    if (!ok) throw std::runtime_error("Nessun file da rinominare");
+    bool titles = checked(RenTitle);
+    fs::path tools;
+    if (titles) tools = toolsFolder();
+    auto question = L"Rinominare " + std::to_wstring(ok) + L" file in\n" + get(RenFolder) + L"?" +
+                    (titles ? L"\n\nAnche il titolo interno degli MKV verrà modificato nei file originali." : L"");
+    if (MessageBoxW(window, question.c_str(), L"MKV Flow", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    saveSettings();
+    auto plan = renamePlan;
+    auto rules = renameRules();
+    renameRunning = true;
+    status(L"Rinomina in corso...");
+    emit(L"\r\nRinomina in " + get(RenFolder) + L": \"" + rules.find + L"\" → \"" + rules.with + L"\"");
+    runWorker([plan, rules, titles, tools]() mutable {
+        if (titles) {
+            for (auto& item : plan) {
+                if (cancelled) break;
+                if (item.companion || !item.error.empty()) continue;
+                try {
+                    auto title = analyze(tools, item.from, cancelled).title;
+                    auto fresh = replaceText(title, rules.find, rules.with, rules.ignoreCase);
+                    if (fresh == title) continue;
+                    DWORD rc = run(tools / L"mkvpropedit.exe", {L"--output-charset", L"UTF-8", item.from.wstring(), L"--edit", L"info", L"--set", L"title=" + fresh},
+                                   cancelled, [](const std::wstring& line) { emit(L"  " + line); });
+                    if (rc > 1) throw std::runtime_error("mkvpropedit ha segnalato un errore");
+                    emit(L"Titolo: \"" + title + L"\" → \"" + fresh + L"\"");
+                } catch (const std::exception& e) {
+                    item.error = L"titolo non aggiornato: " + errorText(e);
+                    for (auto& c : plan) if (c.companion && c.owner == item.owner && c.error.empty()) c.error = L"il video non viene rinominato";
+                }
+            }
+        }
+        auto* result = new Renamed{plan, {}};
+        if (!cancelled) result->done = applyRename(result->plan);
+        for (const auto& [from, to] : result->done) emit(L"Rinominato: " + from.filename().wstring() + L" → " + to.filename().wstring());
+        for (const auto& item : result->plan)
+            if (!item.error.empty()) emit(L"Saltato: " + item.from.filename().wstring() + L" (" + item.error + L")");
+        post(RenamedMessage, 0, result);
+    });
+}
+void renamed(std::unique_ptr<Renamed> r) {
+    lastRename = r->done;
+    renamePlan = r->plan;
+    showRenamePlan(renamePlan, true);
+    status(L"Rinominati " + std::to_wstring(r->done.size()) + L" file" + (r->done.size() < renamePlan.size() ? L"; alcuni saltati (vedi Log)" : L""));
+}
+void undoRename() {
+    if (busy || lastRename.empty()) return;
+    std::vector<RenameItem> back;
+    for (auto it = lastRename.rbegin(); it != lastRename.rend(); ++it) back.push_back({it->second, it->first, false, 0, {}});
+    auto restored = applyRename(back);
+    emit(L"\r\nAnnullata rinomina: " + std::to_wstring(restored.size()) + L" file ripristinati");
+    for (const auto& item : back) if (!item.error.empty()) emit(L"Non ripristinato: " + item.from.filename().wstring() + L" (" + item.error + L")");
+    lastRename.clear();
+    EnableWindow(control(RenUndo), FALSE);
+    refreshRename();
+    status(L"Rinomina annullata: " + std::to_wstring(restored.size()) + L" file ripristinati (i titoli interni restano modificati)");
+}
+
 void command(int id, int code) {
     switch (id) {
-    case NavQueue: case NavTracks: case NavSettings: case NavLog: showPage(id - NavQueue); break;
+    case NavQueue: case NavTracks: case NavRename: case NavSettings: case NavLog:
+        showPage(id - NavQueue);
+        if (id == NavRename) refreshRename();
+        break;
     case Add: for (const auto& f : openFiles(L"Matroska (*.mkv)\0*.mkv\0\0")) addFile(f); refreshQueue(); break;
     case Remove: removeQueued(); break;
     case Clear: items.clear(); current = -1; refreshQueue(); break;
@@ -717,6 +849,13 @@ void command(int id, int code) {
             e.delayMs = static_cast<int>(v);
         });
         break;
+    case RenBrowse: { auto p = folder(); if (!p.empty()) { put(RenFolder, p); refreshRename(); } break; }
+    case RenUseOutput: put(RenFolder, get(Output)); refreshRename(); break;
+    case RenRefresh: refreshRename(); break;
+    case RenFind: case RenWith: if (code == EN_CHANGE) refreshRename(); break;
+    case RenIgnoreCase: case RenCompanions: if (code == BN_CLICKED) refreshRename(); break;
+    case RenApply: renameNow(); break;
+    case RenUndo: undoRename(); break;
     case Start: start(); break;
     case Cancel: cancelled = true; startAfterAnalysis = false; status(L"Annullamento in corso..."); break;
     }
@@ -760,13 +899,13 @@ void build() {
                        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     label(L"MKV Flow " MKVFLOW_VERSION_W L"  /  Flussi, rinomina, verifica", 12, 12, 736, GrowW);
     int nav = NavQueue;
-    for (auto text : {L"Coda", L"Flussi", L"Impostazioni", L"Log"}) {
+    for (auto text : {L"Coda", L"Flussi", L"Rinomina", L"Impostazioni", L"Log"}) {
         make(L"BUTTON", text, nav, 12 + (nav - NavQueue) * 120, 40, 114, 28,
              WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | (nav == NavQueue ? WS_GROUP : 0));
         ++nav;
     }
 
-    buildingPage = 0;  // Coda
+    buildingPage = PageQueue;
     button(L"Aggiungi MKV...", Add, 12, 80, 124);
     button(L"Rimuovi", Remove, 140, 80, 80);
     button(L"Svuota", Clear, 224, 80, 72);
@@ -781,7 +920,7 @@ void build() {
     edit(L"{name} [{crc}]", Pattern, 86, 412, 662, MoveY | GrowW);
     label(L"{name} nome originale  ·  {n} posizione in coda  ·  {crc} CRC32 finale  ·  .mkv aggiunto da solo", 12, 446, 736, MoveY | GrowW);
 
-    buildingPage = 1;  // Flussi
+    buildingPage = PageTracks;
     label(L"File", 12, 84, 36);
     make(L"COMBOBOX", L"", JobCombo, 52, 80, 446, 300, WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, GrowW);
     button(L"Analizza", AnalyzeOne, 506, 79, 100, MoveX);
@@ -811,7 +950,25 @@ void build() {
     checkbox(L"Imposta titolo", SetTitle, 12, 451, 128, MoveY);
     edit(L"{name}", Title, 144, 450, 604, MoveY | GrowW);
 
-    buildingPage = 2;  // Impostazioni
+    buildingPage = PageRename;
+    label(L"Cartella", 12, 84, 60);
+    edit(L"", RenFolder, 76, 80, 446, GrowW);
+    button(L"Sfoglia...", RenBrowse, 530, 79, 98, MoveX);
+    button(L"Usa output", RenUseOutput, 632, 79, 116, MoveX);
+    label(L"Trova", 12, 118, 60);
+    edit(L"", RenFind, 76, 114, 250);
+    label(L"Sostituisci con", 338, 118, 104);
+    edit(L"", RenWith, 446, 114, 302, GrowW);
+    checkbox(L"Ignora maiuscole/minuscole", RenIgnoreCase, 12, 148, 210);
+    checkbox(L"Rinomina anche sottotitoli e audio con lo stesso nome", RenCompanions, 228, 148, 520, GrowW);
+    checkbox(L"Aggiorna anche il titolo interno degli MKV (mkvpropedit, modifica i file)", RenTitle, 12, 174, 736, GrowW);
+    checkbox(L"Usa la stessa sostituzione per i nomi e i titoli creati dal batch", RenBatch, 12, 200, 736, GrowW);
+    listView(RenPreview, 12, 230, 736, 200, 0, 0, {{L"Nome attuale", 300}, {L"Nuovo nome", 300}, {L"Stato", 120}});
+    button(L"Rinomina", RenApply, 12, 440, 120, MoveY);
+    button(L"Annulla ultima rinomina", RenUndo, 136, 440, 184, MoveY);
+    button(L"Aggiorna anteprima", RenRefresh, 324, 440, 150, MoveY);
+
+    buildingPage = PageSettings;
     label(L"Cartella MKVToolNix", 12, 84, 400);
     edit(L"", Tools, 12, 106, 630, GrowW);
     button(L"Sfoglia...", ToolsBrowse, 650, 105, 98, MoveX);
@@ -826,7 +983,7 @@ void build() {
          L"Gli originali restano intatti, il CRC32 è calcolato sul file finale e i nomi esistenti non vengono sovrascritti.",
          0, 12, 328, 736, 44, SS_NOPREFIX, GrowW);
 
-    buildingPage = 3;  // Log
+    buildingPage = PageLog;
     make(L"EDIT", L"", LogBox, 12, 80, 736, 396, WS_TABSTOP | ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL, GrowW | GrowH);
     SendMessageW(control(LogBox), EM_SETLIMITTEXT, 1000000, 0);
 
@@ -860,8 +1017,14 @@ void build() {
     check(NoChapters, readSetting(L"NoChapters", L"0") == L"1");
     check(NoAttachments, readSetting(L"NoAttachments", L"0") == L"1");
     check(NoTags, readSetting(L"NoGlobalTags", L"0") == L"1");
+    put(RenFolder, readSetting(L"RenameFolder", L""));
+    put(RenFind, readSetting(L"RenameFind", L""));
+    put(RenWith, readSetting(L"RenameWith", L""));
+    check(RenIgnoreCase, readSetting(L"RenameIgnoreCase", L"1") == L"1");
+    check(RenCompanions, readSetting(L"RenameCompanions", L"1") == L"1");
+    EnableWindow(control(RenUndo), FALSE);
     DragAcceptFiles(window, TRUE);
-    showPage(0);
+    showPage(PageQueue);
     fillTracks();
 }
 
@@ -875,7 +1038,7 @@ void dropFiles(HDROP drop) {
     }
     DragFinish(drop);
     if (busy) return;
-    if (currentPage == 1 && currentJob()) {
+    if (currentPage == PageTracks && currentJob()) {
         // Nella scheda Flussi i file trascinati diventano tracce del file aperto.
         std::vector<fs::path> files;
         std::error_code ec;
@@ -902,6 +1065,7 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
         case WM_COMMAND: command(LOWORD(w), HIWORD(w)); return 0;
         case WM_NOTIFY: return notify(reinterpret_cast<NMHDR*>(l));
         case LogMessage: { std::unique_ptr<std::wstring> s(reinterpret_cast<std::wstring*>(l)); logText(*s); return 0; }
+        case RenamedMessage: renamed(std::unique_ptr<Renamed>(reinterpret_cast<Renamed*>(l))); return 0;
         case AnalyzedMessage: analyzed(std::unique_ptr<Analyzed>(reinterpret_cast<Analyzed*>(l))); return 0;
         case StateMessage: {
             std::unique_ptr<StateUpdate> s(reinterpret_cast<StateUpdate*>(l));
@@ -917,17 +1081,18 @@ LRESULT CALLBACK procedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
             return 0;
         case DoneMessage: {
             if (worker.joinable()) worker.join();
-            bool wasBatch = batchRunning;
-            batchRunning = false;
+            bool wasBatch = batchRunning, wasRename = renameRunning;
+            batchRunning = renameRunning = false;
             setBusy(false);
             if (closeAfter) { SendMessageW(hwnd, WM_CLOSE, 0, 0); return 0; }
             if (cancelled) { startAfterAnalysis = false; status(L"Annullato — consulta il log"); return 0; }
-            if (wasBatch) { status(L"Batch terminato — consulta il log"); showPage(3); return 0; }
+            if (wasRename) { EnableWindow(control(RenUndo), !lastRename.empty()); return 0; }
+            if (wasBatch) { status(L"Batch terminato — consulta il log"); showPage(PageLog); return 0; }
             if (startAfterAnalysis) {
                 startAfterAnalysis = false;
                 bool ready = std::all_of(items.begin(), items.end(), [](const Item& i) { return i.job.analyzed(); });
                 if (ready) launchBatch();
-                else { status(L"Alcuni file non sono stati analizzati: vedere il Log"); showPage(3); }
+                else { status(L"Alcuni file non sono stati analizzati: vedere il Log"); showPage(PageLog); }
                 return 0;
             }
             status(L"Analisi completata");

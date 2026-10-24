@@ -104,11 +104,14 @@ struct Options {
     bool setTitle = false;
     bool fastCopy = true;               // solo intestazioni quando la struttura non cambia
     bool noChapters = false, noAttachments = false, noGlobalTags = false;
+    std::wstring replaceFind, replaceWith;   // trova/sostituisci applicato a {name}
+    bool replaceIgnoreCase = true;
 };
 
 std::wstring quote(const std::wstring& s);
 std::wstring expand(std::wstring text, const std::wstring& name, size_t index, const std::wstring& crc);
 std::wstring fileName(const std::wstring& text);
+std::wstring outputStem(const Job& job, const Options& o);   // {name} dopo trova/sostituisci
 void validate(const Job& job, const Options& o);
 bool needsRemux(const Job& job, const Options& o);
 std::vector<std::wstring> mergeArgs(const Job& job, const fs::path& out, const Options& o, size_t index);
@@ -125,6 +128,27 @@ DWORD capture(const fs::path& exe, const std::vector<std::wstring>& args, std::a
 Source analyze(const fs::path& tools, const fs::path& file, std::atomic_bool& cancel);
 fs::path process(const Job& job, size_t index, const Options& o, std::atomic_bool& cancel,
                  const Log& log, const Progress& progress = {});
+
+// ---------------------------------------------------------------------------
+// Rinomina sul posto: trova/sostituisci nei nomi dei file di una cartella.
+// ---------------------------------------------------------------------------
+std::wstring replaceText(const std::wstring& text, const std::wstring& find, const std::wstring& with, bool ignoreCase);
+
+struct RenameItem {
+    fs::path from, to;
+    bool companion = false;     // sottotitolo/audio con lo stesso nome dell'MKV
+    size_t owner = 0;           // indice dell'MKV a cui appartiene
+    std::wstring error;         // vuoto = rinominabile
+};
+struct RenameRules {
+    std::wstring find, with;
+    bool ignoreCase = true;
+    bool companions = true;
+};
+std::vector<fs::path> listMkv(const fs::path& folder);
+std::vector<RenameItem> planRename(const std::vector<fs::path>& mkvs, const RenameRules& rules);
+// Rinomina senza mai sostituire file esistenti. Restituisce le coppie eseguite (per annullare).
+std::vector<std::pair<fs::path, fs::path>> applyRename(std::vector<RenameItem>& plan);
 
 std::wstring widen(const std::string& utf8);
 }
