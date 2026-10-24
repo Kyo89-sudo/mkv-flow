@@ -140,7 +140,7 @@ void unitTests() {
     auto ext = addExternal(job, L"C:\\Serie\\Ep 01.ita.forced.srt");
     require(ext == 1 && job.sources[1].languageHint == L"ita" && job.sources[1].forcedHint, "external hints");
     require(!job.analyzed(), "external pending analysis");
-    rejects([&] { validate(job, o); }, "validate requires analysis");
+    rejects([&] { validate(job); }, "validate requires analysis");
     job.sources[1] = [&] { auto s = parseIdentify(srtJson, job.sources[1].path); s.languageHint = L"ita"; s.forcedHint = true; return s; }();
     syncEdits(job);
     require(job.tracks.size() == 6 && job.tracks[5].source == 1, "external appended");
@@ -156,7 +156,7 @@ void unitTests() {
     require(!has(ma, L"C:\\Serie\\Ep 01.ita.forced.srt") && after(ma, L"--track-order").find(L"1:") == std::wstring::npos, "excluded external file");
     removeSource(job, 1);
     require(job.sources.size() == 1 && job.tracks.size() == 5, "remove external");
-    validate(job, o);
+    validate(job);
 
     // --- Filtro lingue
     Job filtered = episode(L"C:\\Serie\\Ep 02.mkv");
@@ -277,6 +277,19 @@ void unitTests() {
     require(unchanged.size() == 2 && unchanged[0].from.filename() == L"S01E02-IsLAND.mkv", "already correct name skipped");
     Options so;
     require(outputStem(makeJob(L"Ep 05 [ABCDEF12].mkv"), so) == L"Ep 05", "batch drops old crc");
+    require(namingPattern(L"{name} [{crc}]", false) == L"{name}", "CRC off removes brackets");
+    require(namingPattern(L"{name} ({crc})", false) == L"{name}", "CRC off removes parentheses");
+    require(namingPattern(L"{crc} {name}", false) == L"{name}", "CRC off removes leading token");
+    require(namingPattern(L"{name} [{crc}]", true) == L"{name} [{crc}]", "CRC on preserves pattern");
+    cr.enableCrc = false;
+    cr.find = L"island";
+    cr.with = L"MIRCrew";
+    cr.companions = false;
+    auto noCrc = planRename(cm, cr);
+    require(!cr.wantsCrc() && noCrc.size() == 2, "CRC off rename plan");
+    require(std::all_of(noCrc.begin(), noCrc.end(), [](const RenameItem& i) {
+        return !i.pendingCrc && i.to.stem().wstring().find(L'[') == std::wstring::npos;
+    }), "CRC off never waits for checksum or reuses old tags");
     fs::remove_all(cdir, ec);
 }
 
@@ -389,6 +402,21 @@ void integrationTests(const fs::path& tools, const fs::path& rootArg) {
     auto before = crcFile(first, cancel);
     rejects([&] { process(job, 3, o, cancel, log); }, "collision rejected");
     require(crcFile(first, cancel) == before, "collision preserves existing");
+
+    // CRC off must bypass the full-file read in both processing paths.
+    Options disabled = o;
+    disabled.enableCrc = false;
+    disabled.output = root / L"no-crc";
+    disabled.pattern = L"Senza CRC {n} [{crc}]";
+    bool crcRead = false;
+    auto noCrcLog = [&](const std::wstring& line) {
+        if (line.find(L"Calcolo CRC32") != line.npos) crcRead = true;
+    };
+    auto plainCopy = process(job, 1, disabled, cancel, noCrcLog);
+    auto plainMux = process(remux, 2, disabled, cancel, noCrcLog);
+    require(!crcRead && plainCopy.filename() == L"Senza CRC 1.mkv" && plainMux.filename() == L"Senza CRC 2.mkv", "CRC off copy and remux names");
+    require(identify(plainCopy).tracks.size() == 2 && identify(plainMux).tracks.size() == 2, "CRC off outputs remain valid MKVs");
+    rejects([&] { process(job, 1, disabled, cancel, noCrcLog); }, "CRC off collision rejected");
 
     // 4) Errore di mkvmerge dopo la creazione del temporaneo: pulizia
     fs::path junk = root / L"rotto.ac3";

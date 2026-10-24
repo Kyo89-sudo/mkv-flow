@@ -32,7 +32,7 @@ enum : int {
     JobCombo = 200, AnalyzeOne, Reset, MoveUp, MoveDown, AddExternal, RemoveExternal, ApplyAll, Tracks,
     EditName, EditLang, EditDefault, EditForced, EditDelay, LangFilter, FilterApply, SetTitle, Title,
     // Impostazioni
-    Tools = 300, ToolsBrowse, FastCopy, Exclusive, NoChapters, NoAttachments, NoTags,
+    Tools = 300, ToolsBrowse, FastCopy, Exclusive, NoChapters, NoAttachments, NoTags, EnableCrc,
     // Comuni
     // Rinomina
     RenFolder = 350, RenBrowse, RenUseOutput, RenFind, RenWith, RenPattern, RenIgnoreCase, RenTitle, RenVerify, RenBatch,
@@ -482,7 +482,7 @@ void saveSettings() {
                            std::pair{RenPattern, L"RenamePattern"}})
         WritePrivateProfileStringW(L"Settings", key, get(id).c_str(), settings.c_str());
     for (auto [id, key] : {std::pair{FastCopy, L"FastCopy"}, std::pair{Exclusive, L"ExclusiveDefault"}, std::pair{NoChapters, L"NoChapters"},
-                           std::pair{NoAttachments, L"NoAttachments"}, std::pair{NoTags, L"NoGlobalTags"},
+                           std::pair{NoAttachments, L"NoAttachments"}, std::pair{NoTags, L"NoGlobalTags"}, std::pair{EnableCrc, L"EnableCrc"},
                            std::pair{RenIgnoreCase, L"RenameIgnoreCase"}})
         WritePrivateProfileStringW(L"Settings", key, checked(id) ? L"1" : L"0", settings.c_str());
 }
@@ -503,13 +503,13 @@ Options options() {
     o.noChapters = checked(NoChapters);
     o.noAttachments = checked(NoAttachments);
     o.noGlobalTags = checked(NoTags);
+    o.enableCrc = checked(EnableCrc);
     if (checked(RenBatch)) {
         o.replaceFind = get(RenFind);
         o.replaceWith = get(RenWith);
         o.replaceIgnoreCase = checked(RenIgnoreCase);
     }
     if (!o.output.is_absolute()) throw std::runtime_error("Scegliere nella scheda Coda un percorso assoluto per la cartella output");
-    if (o.pattern.find(L"{crc}") == o.pattern.npos) throw std::runtime_error("Il modello nome deve contenere {crc}");
     auto validateTokens = [](std::wstring s, bool title) {
         for (auto token : {L"{name}", L"{n}", L"{crc}"}) {
             if (title && std::wstring(token) == L"{crc}") continue;
@@ -520,7 +520,8 @@ Options options() {
     };
     validateTokens(o.pattern, false);
     if (o.setTitle) validateTokens(o.title, true);
-    for (size_t i = 0; i < items.size(); ++i) fileName(expand(o.pattern, outputStem(items[i].job, o), i + 1, L"00000000"));
+    for (size_t i = 0; i < items.size(); ++i)
+        fileName(expand(namingPattern(o.pattern, o.enableCrc), outputStem(items[i].job, o), i + 1, L"00000000"));
     return o;
 }
 
@@ -533,6 +534,7 @@ void setBusy(bool value) {
     for (int id : {LogBox, NavQueue, NavTracks, NavRename, NavSettings, NavLog, Status, ProgressBar}) EnableWindow(control(id), TRUE);
     EnableWindow(control(Cancel), value);
     EnableWindow(control(RenUndo), !value && !lastRename.empty());
+    EnableWindow(control(RenVerify), !value && checked(EnableCrc));
     if (!value) fillPanel();
 }
 void runWorker(std::function<void()> body) {
@@ -743,6 +745,7 @@ RenameRules renameRules() {
     r.pattern = get(RenPattern);
     r.ignoreCase = checked(RenIgnoreCase);
     r.companions = false;  // si rinominano solo gli MKV
+    r.enableCrc = checked(EnableCrc);
     return r;
 }
 void showRenamePlan(const std::vector<RenameItem>& plan, bool done) {
@@ -793,7 +796,7 @@ void renameNow() {
         if (rules.pattern.find(L"{name}") == std::wstring::npos && rules.pattern.find(L"{n}") == std::wstring::npos)
             throw std::runtime_error("Nome: inserire {name} o {n}, altrimenti tutti i file avrebbero lo stesso nome");
     }
-    bool titles = checked(RenTitle), verify = checked(RenVerify);
+    bool titles = checked(RenTitle), verify = rules.enableCrc && checked(RenVerify);
     size_t ok = std::count_if(renamePlan.begin(), renamePlan.end(), [](const RenameItem& i) { return i.error.empty(); });
     size_t pending = std::count_if(renamePlan.begin(), renamePlan.end(), [](const RenameItem& i) { return i.error.empty() && i.pendingCrc && !i.companion; });
     if (!ok && !verify) throw std::runtime_error("Nessun file da rinominare: i nomi sono già corretti");
@@ -814,6 +817,7 @@ void renameNow() {
     emit(L"\r\nRinomina in " + dir.wstring() + L": \"" + rules.find + L"\" → \"" + rules.with + L"\", nome " + rules.pattern);
     runWorker([plan, rules, titles, verify, tools, mkvs] {
         std::vector<bool> changedContent(mkvs.size(), false), inPlan(mkvs.size(), false);
+        std::vector<std::wstring> errors(mkvs.size());
         for (const auto& item : plan) if (!item.companion && item.error.empty()) inPlan[item.owner] = true;
         // 1) Titolo interno: cambia il contenuto, quindi anche il CRC.
         if (titles)
@@ -829,6 +833,7 @@ void renameNow() {
                     changedContent[i] = true;
                     emit(L"Titolo: \"" + title + L"\" → \"" + fresh + L"\"");
                 } catch (const std::exception& e) {
+                    errors[i] = L"modifica titolo fallita: " + errorText(e);
                     emit(L"ERRORE titolo " + mkvs[i].filename().wstring() + L": " + errorText(e));
                 }
             }
@@ -838,7 +843,8 @@ void renameNow() {
         std::vector<size_t> toRead;
         for (size_t i = 0; i < mkvs.size(); ++i) {
             bool missing = rules.wantsCrc() && existingCrc(mkvs[i].stem().wstring()).empty();
-            if (verify || changedContent[i] || (inPlan[i] && missing)) toRead.push_back(i);
+            if (errors[i].empty() && rules.enableCrc &&
+                (verify || (rules.wantsCrc() && (changedContent[i] || (inPlan[i] && missing))))) toRead.push_back(i);
         }
         size_t wrong = 0;
         for (size_t k = 0; k < toRead.size() && !cancelled; ++k) {
@@ -853,6 +859,7 @@ void renameNow() {
                 } else if (!old.empty()) emit(L"CRC corretto: " + mkvs[i].filename().wstring());
                 else emit(L"CRC calcolato: " + mkvs[i].filename().wstring() + L" → " + crcs[i]);
             } catch (const std::exception& e) {
+                errors[i] = L"lettura CRC32 fallita: " + errorText(e);
                 emit(L"ERRORE CRC " + mkvs[i].filename().wstring() + L": " + errorText(e));
             }
             PostMessageW(window, ProgressMessage, static_cast<WPARAM>((k + 1) * 1000 / toRead.size()), 0);
@@ -862,6 +869,8 @@ void renameNow() {
         auto* result = new Renamed{{}, {}};
         if (!cancelled) {
             result->plan = planRename(mkvs, rules, &crcs);
+            for (auto& item : result->plan)
+                if (!errors[item.owner].empty()) item.error = errors[item.owner];
             result->done = applyRename(result->plan);
         }
         for (const auto& [from, to] : result->done) emit(L"Rinominato: " + from.filename().wstring() + L" → " + to.filename().wstring());
@@ -974,6 +983,14 @@ void command(int id, int code) {
     case RenRefresh: refreshRename(); break;
     case RenFind: case RenWith: case RenPattern: if (code == EN_CHANGE) refreshRename(); break;
     case RenIgnoreCase: if (code == BN_CLICKED) refreshRename(); break;
+    case EnableCrc:
+        if (code == BN_CLICKED) {
+            if (!checked(EnableCrc)) check(RenVerify, false);
+            EnableWindow(control(RenVerify), checked(EnableCrc));
+            refreshRename();
+            saveSettings();
+        }
+        break;
     case RenApply: renameNow(); break;
     case RenUndo: undoRename(); break;
     case Start: start(); break;
@@ -1088,9 +1105,9 @@ void build() {
     edit(L"{name} [{crc}]", RenPattern, 76, 148, 250);
     label(L"{name} nome senza vecchio CRC  ·  {crc} CRC32  ·  {n} numero", 338, 152, 410, GrowW);
     checkbox(L"Ignora maiuscole/minuscole", RenIgnoreCase, 12, 180, 210);
-    checkbox(L"Verifica i CRC già presenti nel nome (rilegge i file)", RenVerify, 12, 204, 736, GrowW);
-    checkbox(L"Aggiorna anche il titolo interno degli MKV (mkvpropedit, modifica i file e il CRC)", RenTitle, 12, 228, 736, GrowW);
-    checkbox(L"Usa la stessa sostituzione per i nomi e i titoli creati dal batch", RenBatch, 12, 252, 736, GrowW);
+    checkbox(L"Aggiorna anche il titolo interno degli MKV (modifica i file originali)", RenTitle, 12, 204, 736, GrowW);
+    checkbox(L"Usa la stessa sostituzione per i nomi e i titoli creati dal batch", RenBatch, 12, 228, 736, GrowW);
+    label(L"CRC32: opzioni nella scheda Impostazioni.", 12, 256, 736, GrowW);
     listView(RenPreview, 12, 280, 736, 150, 0, 0, {{L"Nome attuale", 300}, {L"Nuovo nome", 300}, {L"Stato", 120}});
     button(L"Rinomina", RenApply, 12, 440, 120, MoveY);
     button(L"Annulla ultima rinomina", RenUndo, 132, 440, 184, MoveY);
@@ -1106,10 +1123,14 @@ void build() {
     checkbox(L"Rimuovi capitoli", NoChapters, 12, 234, 736, GrowW);
     checkbox(L"Rimuovi allegati (font e immagini)", NoAttachments, 12, 262, 736, GrowW);
     checkbox(L"Rimuovi tag globali", NoTags, 12, 290, 736, GrowW);
+    label(L"Checksum", 12, 328, 400);
+    checkbox(L"Abilita CRC32 (batch e rinomina)", EnableCrc, 12, 350, 736, GrowW);
+    checkbox(L"Verifica i CRC già presenti durante la rinomina (rilegge i file)", RenVerify, 12, 378, 736, GrowW);
+    label(L"Se disattivato: nessun calcolo, nessun CRC aggiunto al nome.", 12, 408, 736, GrowW);
     make(L"STATIC",
          L"Rimozioni, riordino, tracce esterne e ritardi richiedono un remux con mkvmerge, senza ricodifica.\r\n"
-         L"Gli originali restano intatti, il CRC32 è calcolato sul file finale e i nomi esistenti non vengono sovrascritti.",
-         0, 12, 328, 736, 44, SS_NOPREFIX, GrowW);
+         L"Il batch conserva gli originali. I nomi esistenti non vengono sovrascritti.",
+         0, 12, 438, 736, 38, SS_NOPREFIX, GrowW);
 
     buildingPage = PageLog;
     make(L"EDIT", L"", LogBox, 12, 80, 736, 396, WS_TABSTOP | ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL, GrowW | GrowH);
@@ -1145,6 +1166,8 @@ void build() {
     check(NoChapters, readSetting(L"NoChapters", L"0") == L"1");
     check(NoAttachments, readSetting(L"NoAttachments", L"0") == L"1");
     check(NoTags, readSetting(L"NoGlobalTags", L"0") == L"1");
+    check(EnableCrc, readSetting(L"EnableCrc", L"1") == L"1");
+    EnableWindow(control(RenVerify), checked(EnableCrc));
     put(RenFolder, readSetting(L"RenameFolder", L""));
     put(RenFind, readSetting(L"RenameFind", L""));
     put(RenWith, readSetting(L"RenameWith", L""));

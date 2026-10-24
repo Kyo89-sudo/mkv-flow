@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.3 — 2026-10-24 — CRC32 facoltativo
+
+- Opzione globale **Abilita CRC32** nelle Impostazioni, salvata tra gli avvii.
+- Se disattivata, batch e rinomina non leggono i file per il CRC e non lo aggiungono al nome.
+- Il token `{crc}` e le sue parentesi quadre/tonde vengono ignorati quando il CRC è spento.
+- La verifica dei CRC esistenti è nelle Impostazioni ed è disabilitata se il CRC è spento.
+- Rimossa l’obbligatorietà del token `{crc}` nel modello batch.
+- Fix: rinomina saltata se fallisce la modifica del titolo o la lettura del CRC, evitando valori vecchi.
+- Centralizzata la gestione del modello senza CRC; rimosso il parametro inutilizzato di validazione.
+
 ## 0.4.2 — 2026-10-24 — Comandi raggruppati
 
 - Navigazione a segmenti affiancati con selezione blu, nello stile del riferimento approvato.

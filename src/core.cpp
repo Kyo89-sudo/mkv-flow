@@ -276,6 +276,14 @@ std::wstring quote(const std::wstring& s) {
     return out + L'"';
 }
 
+std::wstring namingPattern(const std::wstring& pattern, bool enableCrc) {
+    if (enableCrc) return pattern;
+    static const std::wregex wrapped(L"\\[\\s*\\{crc\\}\\s*\\]|\\(\\s*\\{crc\\}\\s*\\)");
+    auto clean = std::regex_replace(pattern, wrapped, L"");
+    clean = replaceText(clean, L"{crc}", L"", false);
+    return trim(clean);
+}
+
 std::wstring expand(std::wstring text, const std::wstring& name, size_t index, const std::wstring& crc) {
     // Sostituzione in un solo passaggio: anche i nomi in ingresso possono contenere graffe.
     std::wstring out;
@@ -639,7 +647,7 @@ std::wstring applyTemplate(Job& job, const Template& t) {
 // ---------------------------------------------------------------------------
 // Validazione e argomenti MKVToolNix
 // ---------------------------------------------------------------------------
-void validate(const Job& job, const Options& o) {
+void validate(const Job& job) {
     if (!job.analyzed()) fail(L"File non analizzato: " + job.input().filename().wstring());
     bool any = false;
     for (const auto& e : job.tracks) {
@@ -653,7 +661,6 @@ void validate(const Job& job, const Options& o) {
         if (e.delayMs < -36000000 || e.delayMs > 36000000) fail(where + L": ritardo fuori intervallo");
     }
     if (!any) fail(L"Nessuna traccia selezionata per " + job.input().filename().wstring());
-    (void)o;
 }
 
 bool needsRemux(const Job& job, const Options& o) {
@@ -878,7 +885,7 @@ Source analyze(const fs::path& tools, const fs::path& file, std::atomic_bool& ca
 
 fs::path process(const Job& job, size_t index, const Options& o, std::atomic_bool& cancel, const Log& log, const Progress& progress) {
     checkCancel(cancel);
-    validate(job, o);
+    validate(job);
     for (const auto& s : job.sources) {
         std::error_code ec;
         if (!fs::is_regular_file(s.path, ec)) fail(L"File non trovato: " + s.path.wstring());
@@ -931,14 +938,18 @@ fs::path process(const Job& job, size_t index, const Options& o, std::atomic_boo
     }
     checkCancel(cancel);
     if (progress) progress(100);
-    log(L"Calcolo CRC32 sul file finale...");
-    auto crc = crcFile(stage, cancel);
-    auto target = o.output / fileName(expand(o.pattern, outputStem(job, o), index, crc));
+    std::wstring crc;
+    if (o.enableCrc) {
+        log(L"Calcolo CRC32 sul file finale...");
+        crc = crcFile(stage, cancel);
+    } else log(L"CRC32 disattivato: nessun calcolo");
+    auto target = o.output / fileName(expand(namingPattern(o.pattern, o.enableCrc), outputStem(job, o), index, crc));
     checkCancel(cancel);
     // Rinomina nella stessa cartella SENZA sostituzione: collisioni e originali restano protetti.
     if (!MoveFileExW(stage.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("Rinomina fallita: nome esistente, percorso troppo lungo o permessi");
-    log(L"CRC32: " + crc + (warning ? L" — COMPLETATO CON AVVISI: verificare il log" : L" — completato"));
+    log((o.enableCrc ? L"CRC32: " + crc : std::wstring(L"CRC32 disattivato")) +
+        (warning ? L" — COMPLETATO CON AVVISI: verificare il log" : L" — completato"));
     return target;
 }
 // ---------------------------------------------------------------------------
@@ -984,7 +995,7 @@ std::vector<fs::path> listMkv(const fs::path& folder) {
 
 std::vector<RenameItem> planRename(const std::vector<fs::path>& mkvs, const RenameRules& rules, const std::vector<std::wstring>* crcs) {
     std::vector<RenameItem> plan;
-    auto pattern = rules.pattern.empty() ? std::wstring(L"{name}") : rules.pattern;
+    auto pattern = namingPattern(rules.pattern.empty() ? std::wstring(L"{name}") : rules.pattern, rules.enableCrc);
     // File affiancati: "Ep 1 [CRC].ita.srt" oppure "Ep 1.ita.srt" accanto a "Ep 1 [CRC].mkv".
     // Ognuno appartiene all'MKV con il prefisso più lungo: "Ep 1 parte 2.srt" va con "Ep 1 parte 2.mkv".
     struct Owner { fs::path file; size_t mkv; size_t prefix; };

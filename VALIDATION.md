@@ -1,3 +1,15 @@
+# Verifica 0.4.3 — 24 ottobre 2026
+
+- Build Release x64 con VS 2026 / MSVC v145 e avvisi come errori: riuscita.
+- Suite core (97 verifiche), processi e integrazione MKVToolNix v103.0: superata.
+- Test aggiunti: rimozione token e parentesi con CRC spento, anteprima senza CRC,
+  copia e remux reali senza calcolo CRC, output MKV validi e collisione protetta.
+- Il motore di rinomina ora salta i file con errori nel titolo o nella lettura CRC.
+  Tale gestione nel worker è stata controllata nel codice; non è stata simulata
+  un'interruzione disco o un errore parziale di mkvpropedit nella GUI.
+- GUI: opzione CRC nelle Impostazioni, disattivazione della verifica e salvataggio EnableCrc=0 controllati; preferenza iniziale ripristinata.
+- Non verificati tutti i temi Windows e DPI multipli. Eseguibile non firmato.
+
 # Verifica 0.4.2 — 24 ottobre 2026
 
 - Build Release x64 con Visual Studio 2026 / MSVC v145 e avvisi trattati come errori: riuscita.

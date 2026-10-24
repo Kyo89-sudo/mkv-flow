@@ -106,13 +106,15 @@ struct Options {
     bool noChapters = false, noAttachments = false, noGlobalTags = false;
     std::wstring replaceFind, replaceWith;   // trova/sostituisci applicato a {name}
     bool replaceIgnoreCase = true;
+    bool enableCrc = true;
 };
 
 std::wstring quote(const std::wstring& s);
 std::wstring expand(std::wstring text, const std::wstring& name, size_t index, const std::wstring& crc);
+std::wstring namingPattern(const std::wstring& pattern, bool enableCrc);
 std::wstring fileName(const std::wstring& text);
 std::wstring outputStem(const Job& job, const Options& o);   // {name} dopo trova/sostituisci
-void validate(const Job& job, const Options& o);
+void validate(const Job& job);
 bool needsRemux(const Job& job, const Options& o);
 std::vector<std::wstring> mergeArgs(const Job& job, const fs::path& out, const Options& o, size_t index);
 std::vector<std::wstring> propeditArgs(const Job& job, const fs::path& file, const Options& o, size_t index);
@@ -149,7 +151,8 @@ struct RenameRules {
     std::wstring pattern = L"{name} [{crc}]";   // {name} = nome senza vecchio CRC, dopo trova/sostituisci
     bool ignoreCase = true;
     bool companions = true;
-    bool wantsCrc() const { return pattern.find(L"{crc}") != std::wstring::npos; }
+    bool enableCrc = true;
+    bool wantsCrc() const { return enableCrc && pattern.find(L"{crc}") != std::wstring::npos; }
 };
 std::vector<fs::path> listMkv(const fs::path& folder);
 // {crc}: valore in `crcs` (uno per MKV) se non vuoto, altrimenti il CRC già nel nome (rinominare non

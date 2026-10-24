@@ -4,8 +4,25 @@
 
 **Flussi, rinomina, verifica.** Una piccola GUI nativa Windows per modificare i
 flussi video, audio e sottotitoli di file MKV in batch, senza ricodifica.
-C++17 e Win32; nessun runtime Python, Electron, .NET o Qt. Versione **0.4.2**,
+C++17 e Win32; nessun runtime Python, Electron, .NET o Qt. Versione **0.4.3**,
 interfaccia in italiano.
+
+## Novità 0.4.3: CRC32 facoltativo
+
+Nella scheda **Impostazioni**, **Abilita CRC32** controlla batch e rinomina.
+L'opzione è attiva per impostazione predefinita e viene salvata. Disattivandola:
+
+- nessuna lettura completa del file per calcolare o verificare il CRC;
+- nessun CRC aggiunto al nome: `{name} [{crc}]` diventa `{name}`;
+- anche `({crc})` e il token `{crc}` da solo vengono rimossi dal modello effettivo;
+- i vecchi tag CRC vengono tolti dal nome di base, come già nelle versioni precedenti;
+- la verifica dei CRC esistenti viene disabilitata.
+
+Il modello scritto nel campo resta conservato: riattivando l'opzione torna operativo.
+La rimozione di vecchi tag è una rinomina: verificare l'anteprima prima di applicarla.
+Gli altri caratteri del modello restano invariati. Con CRC attivo è ammesso anche
+un modello senza `{crc}`: il valore viene calcolato e riportato nel Log.
+La voce **Verifica i CRC già presenti** si trova anch'essa nelle Impostazioni.
 
 ## Novità 0.4.2: comandi raggruppati
 
@@ -78,7 +95,7 @@ tutti con **Verifica i CRC già presenti**, che segnala nel Log i nomi con CRC s
 - Editor dei flussi descritto sopra, con modello applicabile a tutto il batch.
 - Titolo del contenitore con `{name}` e `{n}`; rimozione opzionale di capitoli,
   allegati e tag globali.
-- CRC32 IEEE sul file **dopo** remux e modifiche, inserito nel nome.
+- CRC32 IEEE facoltativo sul file **dopo** remux e modifiche, inserito nel nome se richiesto dal modello.
 - Output separato, originali intatti, nessuna sovrascrittura di file esistenti.
 - Barra di avanzamento, stato per file nella coda, annullamento in ogni fase.
 - Impostazioni ricordate in `%LOCALAPPDATA%\MKVFlow\settings.ini`.
