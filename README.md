@@ -1,108 +1,117 @@
-# MKV Flow
+<div align="center">
+  <img src="assets/icon-3d.png" width="180" alt="Icona MKV Flow">
+  <h1>MKV Flow</h1>
+  <p><strong>Organizza i tuoi MKV. Modifica i flussi. Rinomina in batch.</strong></p>
+  <p>Un programma nativo e leggero per Windows, senza ricodifica di audio e video.</p>
+  <p>
+    <img alt="Versione 0.4.3" src="https://img.shields.io/badge/versione-0.4.3-1976d2?style=flat-square">
+    <img alt="Windows 10 e 11 x64" src="https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D4?style=flat-square">
+    <img alt="C++17 e Win32" src="https://img.shields.io/badge/C%2B%2B17-Win32-385875?style=flat-square">
+    <a href="LICENSE"><img alt="Licenza MIT" src="https://img.shields.io/badge/licenza-MIT-238636?style=flat-square"></a>
+  </p>
+  <p>
+    <a href="https://github.com/Kyo89-sudo/mkv-flow/releases/latest"><strong>Scarica per Windows</strong></a>
+    &nbsp; · &nbsp;
+    <a href="#inizia-in-pochi-passaggi">Guida rapida</a>
+    &nbsp; · &nbsp;
+    <a href="CHANGELOG.md">Novità</a>
+    &nbsp; · &nbsp;
+    <a href="https://github.com/Kyo89-sudo/mkv-flow/issues">Segnala un problema</a>
+  </p>
+</div>
 
-<img src="assets/icon-3d.png" width="128" alt="MKV Flow 3D icon">
+---
 
-**Flussi, rinomina, verifica.** Una piccola GUI nativa Windows per modificare i
-flussi video, audio e sottotitoli di file MKV in batch, senza ricodifica.
-C++17 e Win32; nessun runtime Python, Electron, .NET o Qt. Versione **0.4.3**,
-interfaccia in italiano.
+**MKV Flow** raccoglie in una sola interfaccia la coda dei file, l'editor delle
+tracce e la rinomina degli episodi. Puoi lavorare su un singolo MKV o applicare
+le stesse modifiche a una serie di file, con anteprima dei nomi e log delle operazioni.
 
-## Novità 0.4.3: CRC32 facoltativo
+L'app usa **C++17 e Win32** e non richiede Python, Electron, .NET o Qt per funzionare.
+Il pacchetto è portabile: estrai lo ZIP e avvia `MKVFlow.exe`.
 
-Nella scheda **Impostazioni**, **Abilita CRC32** controlla batch e rinomina.
-L'opzione è attiva per impostazione predefinita e viene salvata. Disattivandola:
-
-- nessuna lettura completa del file per calcolare o verificare il CRC;
-- nessun CRC aggiunto al nome: `{name} [{crc}]` diventa `{name}`;
-- anche `({crc})` e il token `{crc}` da solo vengono rimossi dal modello effettivo;
-- i vecchi tag CRC vengono tolti dal nome di base, come già nelle versioni precedenti;
-- la verifica dei CRC esistenti viene disabilitata.
-
-Il modello scritto nel campo resta conservato: riattivando l'opzione torna operativo.
-La rimozione di vecchi tag è una rinomina: verificare l'anteprima prima di applicarla.
-Gli altri caratteri del modello restano invariati. Con CRC attivo è ammesso anche
-un modello senza `{crc}`: il valore viene calcolato e riportato nel Log.
-La voce **Verifica i CRC già presenti** si trova anch'essa nelle Impostazioni.
-
-## Novità 0.4.2: comandi raggruppati
-
-Barra Vista a segmenti affiancati, selezione blu, comandi raggruppati per funzione
-e sfondo chiaro. Restano disponibili tutti gli strumenti della versione 0.4.1.
-
-## Novità 0.3: editor dei flussi
-
-La vecchia casella di regole testuali (`a1|Italiano|ita|1|0`) è sostituita da una
-scheda **Flussi** che mostra le tracce reali del file, lette con `mkvmerge -J`:
-
-| # | Tipo | Codec | Lingua | Nome | Pred. | Forz. | Ritardo | Dettagli | Origine |
-|---|------|-------|--------|------|-------|-------|---------|----------|---------|
-| ☑ 1 | Video 1 | HEVC | und | | Sì | | | 1920x1080 | MKV · ID 0 |
-| ☑ 2 | Audio 2 | E-AC-3 | ita | Italiano | Sì | | | 6 ch, 48 kHz | MKV · ID 2 |
-| ☐ 3 | Audio 1 | AAC | jpn | Originale | | | | 2 ch, 48 kHz | MKV · ID 1 |
-| ☑ 4 | Sottotitoli | SRT | ita | Cartelli | | Sì | +250 ms | | Ep 01.ita.forced.srt |
-
-- **Spunta** = la traccia resta; togli la spunta per rimuoverla.
-- **▲ Su / ▼ Giù** (o Ctrl+↑/↓) cambiano l'ordine finale delle tracce.
-- Sotto la lista si modificano **nome, lingua, predefinita, forzata e ritardo** della
-  traccia selezionata. Le modifiche sono segnate con ✎.
-- **Una sola predefinita per tipo**: attivare la predefinita su un audio la toglie agli
-  altri audio (disattivabile in Impostazioni).
-- **Tracce esterne**: *Aggiungi traccia esterna…* o trascina file audio/sottotitoli
-  sulla scheda Flussi (`.ac3 .eac3 .dts .aac .flac .opus .mka .srt .ass .sup …`).
-  La lingua è dedotta dal nome (`Episodio 01.ita.srt` → `ita`), `forced` nel nome
-  imposta il flag forzato.
-- **Mantieni lingue** (`ita, jpn`) toglie in un clic audio e sottotitoli in altre lingue.
-- **Applica a tutti i file** copia il layout del file aperto su tutta la coda: le tracce
-  sono riconosciute per tipo e posizione (secondo audio, primo sottotitolo…). Passano
-  solo le proprietà modificate: i nomi non toccati restano quelli di ciascun episodio.
-  I file con struttura diversa sono segnalati in coda e nel Log.
-- **Abbina tracce esterne** (scheda Coda) aggiunge a ogni episodio i file con lo stesso
-  nome nella sua cartella: `Ep 01.mkv` + `Ep 01.ita.ac3` + `Ep 01 [eng].srt`.
-
-Se cambiano soltanto nomi, lingue o flag, il file è copiato e modificato con
-`mkvpropedit` (veloce). Rimozioni, riordino, tracce esterne e ritardi richiedono un
-remux con `mkvmerge`, sempre senza ricodificare audio o video.
-
-## Rinomina episodi (0.4)
-
-La scheda **Rinomina** rinomina in blocco gli MKV di una cartella mantenendo la
-struttura `nome [CRC32].mkv`, per esempio da `S01E01-IsLAND [A1B2C3D4].mkv` a
-`S01E01-MIRCrew [A1B2C3D4].mkv` per tutta la stagione:
-
-1. Scegliere la cartella (o **Usa output** per quella del batch).
-2. Facoltativo: **Trova** `IsLAND`, **Sostituisci con** `MIRCrew`.
-3. **Nome** (predefinito `{name} [{crc}]`): `{name}` è il nome attuale senza il vecchio
-   `[CRC]`, dopo il trova/sostituisci; `{crc}` il CRC32; `{n}` il numero in ordine alfabetico.
-   L'anteprima mostra subito *nome attuale → nuovo nome* e gli eventuali problemi.
-4. **Rinomina**, poi confermare. **Annulla ultima rinomina** rimette i nomi di prima.
-
-Rinominare non cambia il contenuto, quindi un CRC già presente nel nome viene **riusato**
-senza rileggere il file: la rinomina è immediata. Il CRC32 viene calcolato solo per i file
-che non lo hanno nel nome, per quelli di cui si modifica il titolo interno, oppure per
-tutti con **Verifica i CRC già presenti**, che segnala nel Log i nomi con CRC sbagliato.
-
-- Lavora sul posto: nessuna copia, nessun remux, i file esistenti non vengono mai
-  sovrascritti (un nome già presente è segnalato e quel file viene saltato).
-- Si rinominano solo i file MKV: sottotitoli e audio nella cartella non vengono toccati.
-- Facoltativo: **Aggiorna anche il titolo interno** applica la stessa sostituzione al
-  titolo del contenitore con `mkvpropedit` (modifica i file originali; non annullabile).
-- Facoltativo: la stessa sostituzione può valere per `{name}` e per il titolo nel batch,
-  così l'output esce già con il nuovo gruppo.
+> **Dipendenza richiesta:** installa separatamente [MKVToolNix per Windows](https://mkvtoolnix.download/downloads.html#windows)
+> e seleziona la sua cartella nelle Impostazioni. MKVToolNix non è incluso nel pacchetto.
 
 ## Funzioni
 
-- Coda di file MKV con aggiunta multipla e trascinamento di file/cartelle.
-- Editor dei flussi descritto sopra, con modello applicabile a tutto il batch.
-- Titolo del contenitore con `{name}` e `{n}`; rimozione opzionale di capitoli,
-  allegati e tag globali.
-- CRC32 IEEE facoltativo sul file **dopo** remux e modifiche, inserito nel nome se richiesto dal modello.
-- Output separato, originali intatti, nessuna sovrascrittura di file esistenti.
-- Barra di avanzamento, stato per file nella coda, annullamento in ogni fase.
-- Impostazioni ricordate in `%LOCALAPPDATA%\MKVFlow\settings.ini`.
+| Funzione | Cosa puoi fare | Dove si trova |
+| :--- | :--- | :--- |
+| **Coda batch** | Aggiungere più MKV o trascinare file e cartelle; seguire stato e avanzamento. | Coda |
+| **Editor dei flussi** | Includere, escludere e riordinare le tracce video, audio e sottotitoli. | Flussi |
+| **Proprietà delle tracce** | Modificare nome, lingua, flag predefinito/forzato e ritardo. | Flussi |
+| **Tracce esterne** | Aggiungere audio e sottotitoli; abbinare automaticamente i file con lo stesso nome. | Flussi / Coda |
+| **Modello per la serie** | Applicare ai file del batch le proprietà modificate, per tipo e posizione della traccia. | Flussi |
+| **Filtro lingue** | Mantenere audio e sottotitoli nelle lingue desiderate. | Flussi |
+| **Titolo e contenitore** | Cambiare il titolo; rimuovere opzionalmente capitoli, allegati e tag globali. | Flussi / Impostazioni |
+| **Rinomina episodi** | Trovare e sostituire testo nei nomi, con anteprima e annullamento dell'ultima rinomina. | Rinomina |
+| **CRC32 opzionale** | Calcolare il checksum e usarlo nel nome, oppure disabilitarlo per batch e rinomina. | Impostazioni → Checksum |
+| **Verifica CRC** | Rileggere gli MKV e confrontare il checksum con quello già presente nel nome. | Impostazioni → Checksum |
+| **Copia o remux automatico** | Usare la copia veloce per le sole intestazioni; ripacchettare quando cambia la struttura. | Impostazioni |
+| **Protezione dei file** | Conservare gli originali nel batch e impedire la sovrascrittura dei nomi esistenti. | Automatica |
+| **Log e annullamento** | Consultare i dettagli e interrompere il lavoro in corso. | Log / Barra inferiore |
 
-MKVToolNix è una dipendenza **esterna**, non inclusa né modificata. Installarlo da
-[mkvtoolnix.download](https://mkvtoolnix.download/downloads.html#windows), conservando
-la sua distribuzione completa: copiare soltanto i due EXE potrebbe non bastare.
+## Inizia in pochi passaggi
+
+1. **Scarica** lo ZIP dalla [release più recente](https://github.com/Kyo89-sudo/mkv-flow/releases/latest) ed estrailo.
+2. **Configura MKVToolNix** nella scheda Impostazioni. Qui puoi anche attivare o disattivare il CRC32.
+3. **Aggiungi gli MKV** alla Coda e scegli la cartella di destinazione.
+4. **Modifica i flussi**, se necessario, e usa *Applica a tutti i file* per una serie con struttura compatibile.
+5. **Avvia il batch** oppure usa la scheda Rinomina per modificare soltanto i nomi dei file.
+
+## Nomi e checksum, come preferisci
+
+| Impostazione | Modello | Esempio di risultato |
+| :--- | :--- | :--- |
+| CRC32 attivo | `{name} [{crc}]` | `Episodio 01 [A1B2C3D4].mkv` |
+| CRC32 disattivato | `{name} [{crc}]` | `Episodio 01.mkv` |
+| Numerazione personalizzata | `Serie - {n}` | `Serie - 1.mkv` |
+
+Il CRC32 si controlla da **Impostazioni → Checksum → Abilita CRC32**.
+La preferenza viene salvata. Se è spento, non viene calcolato né aggiunto al nome:
+il token `{crc}` e le sue parentesi quadre o tonde vengono ignorati, senza lasciare parentesi vuote.
+Il modello scritto resta conservato, pronto per quando riattivi l'opzione.
+
+Nel batch, con CRC attivo, il checksum viene calcolato **dopo tutte le modifiche**.
+Nella sola rinomina, un CRC già presente nel nome può essere riusato perché il
+contenuto non cambia; puoi richiederne la verifica completa dalle Impostazioni.
+Con CRC attivo il valore viene calcolato e scritto nel Log anche se il modello non contiene `{crc}`.
+
+I vecchi tag CRC vengono tolti dal nome di base. Gli altri caratteri del modello
+restano invariati: controlla sempre l'anteprima della rinomina.
+
+## Lavora sui flussi senza ricodificare
+
+La tabella della scheda **Flussi** mostra le tracce reali lette con `mkvmerge -J`.
+La spunta decide quali mantenere; **▲ Su / ▼ Giù** o **Ctrl+↑/↓** cambiano l'ordine.
+Nome, lingua, flag e ritardo si modificano nel pannello della traccia selezionata.
+
+Puoi aggiungere tracce esterne (`.ac3`, `.eac3`, `.dts`, `.aac`, `.flac`, `.opus`,
+`.srt`, `.ass`, `.sup` e altri formati supportati). La lingua viene dedotta dal nome,
+per esempio `Episodio 01.ita.srt`; `forced` nel nome suggerisce il flag forzato.
+**Abbina tracce esterne** associa i file ai rispettivi episodi nella stessa cartella.
+
+**Applica a tutti i file** usa tipo e posizione della traccia e trasferisce solo
+le proprietà modificate. Le differenze di struttura vengono segnalate; le tracce
+esterne vanno abbinate separatamente. **Mantieni lingue** filtra audio e sottotitoli
+con codici come `ita, jpn`.
+
+Se cambiano solo le intestazioni, MKV Flow può copiare il file e modificarlo con
+`mkvpropedit`. Riordino, rimozioni, ritardi e tracce esterne richiedono un remux
+con `mkvmerge`, senza ricodificare audio o video.
+
+## Rinomina con anteprima
+
+Scegli una cartella, compila **Trova**, **Sostituisci con** e il modello **Nome**.
+La tabella mostra *nome attuale → nuovo nome* prima di applicare le modifiche.
+Si rinominano **solo gli MKV**: audio e sottotitoli affiancati restano intatti.
+Un nome già esistente viene segnalato e saltato.
+
+**Annulla ultima rinomina** ripristina i nomi precedenti. L'opzione
+**Aggiorna anche il titolo interno**, invece, modifica gli MKV originali con
+`mkvpropedit`: questa modifica del contenuto non viene annullata ripristinando i nomi.
+Se fallisce la modifica del titolo o la lettura CRC, quel file viene saltato.
+
+---
 
 ## Compilare con Visual Studio 2026
 
@@ -174,7 +183,7 @@ processi, pipeline, CRC e nomi. `src/main.cpp`: finestra, coda, editor e worker.
 Gli argomenti sono quotati con le regole Windows e passati direttamente a
 `CreateProcessW`, senza shell. L'ereditarietà degli handle è limitata; un Job Object
 termina il processo esterno e i figli all'annullamento. Il file temporaneo è creato
-nella cartella output, scritto, letto per il CRC e rinominato nella stessa cartella
+nella cartella output, scritto, letto per il CRC se abilitato e rinominato nella stessa cartella
 senza il flag di sostituzione: una collisione non sovrascrive l'esistente.
 Nessun servizio di rete o telemetria nell'app.
 
