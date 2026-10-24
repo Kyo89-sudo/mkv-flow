@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 — 2026-10-24 — Editor dei flussi
+
+- Nuova scheda **Flussi**: tabella delle tracce reali (`mkvmerge -J`) con spunta per
+  includere/escludere, riordino (▲/▼, Ctrl+↑/↓) e pannello per nome, lingua,
+  predefinita, forzata e ritardo. Sostituisce le regole testuali `a1|nome|lingua|…`.
+- Tracce esterne audio/sottotitoli/video: pulsante, trascinamento sulla scheda Flussi
+  e **Abbina tracce esterne** per nome file; lingua e flag forzato dedotti dal nome.
+- **Applica a tutti i file**: modello per tipo e posizione, solo proprietà cambiate,
+  differenze di struttura segnalate; applicato anche ai file analizzati dopo.
+- **Mantieni lingue** per filtrare audio e sottotitoli in un clic.
+- Una sola traccia predefinita per tipo (opzionale).
+- Scelta automatica: copia + `mkvpropedit` se cambiano solo le intestazioni,
+  remux `mkvmerge` per rimozioni, riordino, esterni e ritardi.
+- Opzioni contenitore: rimuovi capitoli, allegati, tag globali.
+- Coda con colonne Flussi/Esterni/Stato, barra di avanzamento, analisi prima del batch.
+- Finestra 760 × 540, impostazioni aggiuntive salvate in `settings.ini`.
+- Test: analisi JSON, layout, modello, argomenti; integrazione con remux, SRT esterno
+  e riordino. La workflow installa MKVToolNix ed esegue anche l'integrazione e un
+  avvio di prova della GUI; build con avvisi trattati come errori.
+
 ## 0.2.0 — 2026-10-23 — Hotfix GUI
 
 - Riprogettata la finestra: area utile iniziale 640 × 460 invece di 930 × 780.

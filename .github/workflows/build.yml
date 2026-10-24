@@ -12,12 +12,32 @@ jobs:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
       - name: Build (installed VS toolset)
-        run: msbuild MKVFlow.sln /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+        run: msbuild MKVFlow.sln /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /warnaserror
       - name: Set up developer environment
         uses: ilammy/msvc-dev-cmd@v1
       - name: Unit tests
         shell: cmd
         run: test.cmd
+      - name: Install MKVToolNix
+        shell: pwsh
+        run: |
+          choco install mkvtoolnix -y --no-progress
+          if (-not (Test-Path "C:\Program Files\MKVToolNix\mkvmerge.exe")) { throw "mkvmerge non trovato" }
+          & "C:\Program Files\MKVToolNix\mkvmerge.exe" --version
+      - name: Integration tests with MKVToolNix
+        shell: cmd
+        run: test.cmd "C:\Program Files\MKVToolNix"
+      - name: GUI smoke test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath bin\Release\MKVFlow.exe -PassThru
+          Start-Sleep -Seconds 4
+          $p.Refresh()
+          if ($p.HasExited) { throw "MKVFlow.exe terminato all'avvio (codice $($p.ExitCode))" }
+          if ($p.MainWindowHandle -eq 0) { throw "Finestra principale non creata" }
+          Write-Host "Finestra: $($p.MainWindowTitle)"
+          [void]$p.CloseMainWindow()
+          if (-not $p.WaitForExit(5000)) { $p.Kill(); throw "Chiusura non riuscita" }
       - uses: actions/upload-artifact@v4
         with:
           name: MKVFlow-windows-x64

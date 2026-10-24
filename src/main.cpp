@@ -2,184 +2,983 @@
 #include "version.h"
 #include <commctrl.h>
 #include <commdlg.h>
-#include <shlobj.h>
 #include <shellapi.h>
-#include <thread>
-#include <memory>
+#include <shlobj.h>
+#include <uxtheme.h>
 #include <algorithm>
 #include <fstream>
-#pragma comment(lib,"comctl32.lib")
-#pragma comment(lib,"comdlg32.lib")
-#pragma comment(lib,"shell32.lib")
-#pragma comment(lib,"ole32.lib")
-#pragma comment(linker,"/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#include <functional>
+#include <iterator>
+#include <memory>
+#include <optional>
+#include <thread>
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "uxtheme.lib")
+#pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+
 namespace {
 using namespace app;
-enum { Add=100, Remove, Clear, Inspect, Tools, ToolsBrowse, Output, OutputBrowse, Pattern, SetTitle, Title, Remux, Rules, Start, Cancel, Queue, LogBox, Status, RuleType, RuleName, RuleLang, RuleDefault, RuleForced, RuleAdd, NavQueue=200, NavTracks, NavSettings, NavLog };
-constexpr UINT LogMessage=WM_APP+1, DoneMessage=WM_APP+2;
-HWND window; HINSTANCE instance; HFONT font;int dpi=96;
-std::vector<fs::path> files;std::thread worker;std::atomic_bool cancelled=false;bool busy=false,closeAfter=false;
+
+// ---------------------------------------------------------------------------
+// Identificatori e stato
+// ---------------------------------------------------------------------------
+enum : int {
+    // Coda
+    Add = 100, Remove, Clear, AnalyzeAll, Companions, Queue, Output, OutputBrowse, Pattern,
+    // Flussi
+    JobCombo = 200, AnalyzeOne, Reset, MoveUp, MoveDown, AddExternal, RemoveExternal, ApplyAll, Tracks,
+    EditName, EditLang, EditDefault, EditForced, EditDelay, LangFilter, FilterApply, SetTitle, Title,
+    // Impostazioni
+    Tools = 300, ToolsBrowse, FastCopy, Exclusive, NoChapters, NoAttachments, NoTags,
+    // Comuni
+    LogBox = 400, Start, Cancel, ProgressBar, Status, NavQueue = 500, NavTracks, NavSettings, NavLog,
+};
+constexpr UINT LogMessage = WM_APP + 1, DoneMessage = WM_APP + 2, AnalyzedMessage = WM_APP + 3,
+               ProgressMessage = WM_APP + 4, StateMessage = WM_APP + 5, LangCodeMessage = WM_APP + 6;
+constexpr int BaseWidth = 760, BaseHeight = 540;
+enum Anchor { MoveX = 1, MoveY = 2, GrowW = 4, GrowH = 8 };
+
+struct Item {
+    Job job;
+    std::wstring state = L"Da analizzare";
+};
+struct Analyzed {
+    size_t job = 0, source = 0;
+    fs::path path;
+    std::optional<Source> result;
+    std::wstring error;
+};
+struct StateUpdate {
+    size_t job;
+    std::wstring text;
+};
+
+HWND window;
+HINSTANCE instance;
+HFONT font;
+int dpi = 96;
+std::vector<Item> items;
+int current = -1;                       // file aperto nella scheda Flussi
+std::optional<Template> model;          // layout applicato a tutto il batch
+std::thread worker;
+std::atomic_bool cancelled = false;
+bool busy = false, closeAfter = false, startAfterAnalysis = false, filling = false, batchRunning = false;
 fs::path settings;
-int currentPage=0, buildingPage=-1;
-struct Placement {HWND h;int x,y,w,hgt;bool stretch;int page;};std::vector<Placement> controls;
-HWND control(int id){return GetDlgItem(window,id);}
-std::wstring get(int id){int n=GetWindowTextLengthW(control(id));std::wstring s(n+1,L'\0');GetWindowTextW(control(id),s.data(),n+1);s.resize(n);return s;}
-bool checked(int id){return SendMessageW(control(id),BM_GETCHECK,0,0)==BST_CHECKED;}
-void put(int id,const std::wstring& s){SetWindowTextW(control(id),s.c_str());}
-void emit(const std::wstring& s){auto p=new std::wstring(s);if(!PostMessageW(window,LogMessage,0,reinterpret_cast<LPARAM>(p)))delete p;}
-void logText(const std::wstring& text){
-    HWND h=control(LogBox);if(GetWindowTextLengthW(h)>180000)SetWindowTextW(h,L"[Log precedente abbreviato]\r\n");
-    SendMessageW(h,EM_SETSEL,static_cast<WPARAM>(-1),static_cast<LPARAM>(-1));auto line=text+L"\r\n";SendMessageW(h,EM_REPLACESEL,FALSE,reinterpret_cast<LPARAM>(line.c_str()));
+int currentPage = 0, buildingPage = -1;
+
+struct Placement { HWND h; int x, y, w, hgt, anchors, page; };
+std::vector<Placement> controls;
+
+const wchar_t* languageChoices[] = {
+    L"ita — Italiano", L"eng — Inglese", L"jpn — Giapponese", L"spa — Spagnolo", L"fre — Francese",
+    L"ger — Tedesco", L"por — Portoghese", L"rus — Russo", L"chi — Cinese", L"kor — Coreano", L"und — Non definita",
+};
+
+// ---------------------------------------------------------------------------
+// Utilità finestra
+// ---------------------------------------------------------------------------
+HWND control(int id) { return GetDlgItem(window, id); }
+std::wstring get(int id) {
+    int n = GetWindowTextLengthW(control(id));
+    std::wstring s(n + 1, L'\0');
+    GetWindowTextW(control(id), s.data(), n + 1);
+    s.resize(n);
+    return s;
 }
-HWND make(const wchar_t* cls,const wchar_t* text,int id,int x,int y,int w,int h,DWORD style=0,bool stretch=false){
-    HWND c=CreateWindowExW(wcscmp(cls,L"EDIT")==0?WS_EX_CLIENTEDGE:0,cls,text,WS_CHILD|WS_VISIBLE|style,x,y,w,h,window,reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),instance,nullptr);
-    SendMessageW(c,WM_SETFONT,reinterpret_cast<WPARAM>(font),TRUE);controls.push_back({c,x,y,w,h,stretch,buildingPage});return c;
+bool checked(int id) { return SendMessageW(control(id), BM_GETCHECK, 0, 0) == BST_CHECKED; }
+void check(int id, bool value) { SendMessageW(control(id), BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0); }
+void put(int id, const std::wstring& s) { SetWindowTextW(control(id), s.c_str()); }
+void status(const std::wstring& s) { put(Status, s); }
+int px(int logical) { return MulDiv(logical, dpi, 96); }
+
+void post(UINT msg, WPARAM w, void* payload) { PostMessageW(window, msg, w, reinterpret_cast<LPARAM>(payload)); }
+void emit(const std::wstring& s) {
+    auto p = new std::wstring(s);
+    if (!PostMessageW(window, LogMessage, 0, reinterpret_cast<LPARAM>(p))) delete p;
 }
-void label(const wchar_t* text,int x,int y,int w){make(L"STATIC",text,0,x,y,w,20);}
-void showPage(int page){
-    currentPage=page;
-    for(const auto& c:controls)ShowWindow(c.h,c.page<0||c.page==page?SW_SHOW:SW_HIDE);
-    for(int i=0;i<4;++i)SendMessageW(control(NavQueue+i),BM_SETCHECK,i==page?BST_CHECKED:BST_UNCHECKED,0);
+void postState(size_t job, const std::wstring& text) {
+    auto p = new StateUpdate{job, text};
+    if (!PostMessageW(window, StateMessage, 0, reinterpret_cast<LPARAM>(p))) delete p;
 }
-void layout(){
-    RECT r;GetClientRect(window,&r);int dx=MulDiv(r.right,96,dpi)-640,dy=MulDiv(r.bottom,96,dpi)-460;
-    for(const auto& c:controls){int x=c.x,y=c.y,h=c.hgt;
-        if(c.page<0&&y>=410)y+=dy;
-        if(c.page==0){if(GetDlgCtrlID(c.h)==Queue)h+=dy;else if(y>=266)y+=dy;}
-        if(c.page==1&&GetDlgCtrlID(c.h)==Rules)h+=dy;
-        if(c.page==3&&GetDlgCtrlID(c.h)==LogBox)h+=dy;
-        if(!c.stretch&&c.x+c.w>=624)x+=dx;
-        MoveWindow(c.h,MulDiv(x,dpi,96),MulDiv(y,dpi,96),MulDiv(c.w+(c.stretch?dx:0),dpi,96),MulDiv(h,dpi,96),TRUE);
-    }
+void logText(const std::wstring& text) {
+    HWND h = control(LogBox);
+    if (GetWindowTextLengthW(h) > 400000) SetWindowTextW(h, L"[Log precedente abbreviato]\r\n");
+    SendMessageW(h, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
+    auto line = text + L"\r\n";
+    SendMessageW(h, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(line.c_str()));
 }
-void setBusy(bool value){busy=value;for(const auto& c:controls)if(GetDlgCtrlID(c.h)>0)EnableWindow(c.h,!value);EnableWindow(control(LogBox),TRUE);for(int id=NavQueue;id<=NavLog;++id)EnableWindow(control(id),TRUE);EnableWindow(control(Cancel),value);put(Status,value?L"Elaborazione in corso...":L"Pronto");}
-void refresh(){SendMessageW(control(Queue),LB_RESETCONTENT,0,0);for(const auto& p:files)SendMessageW(control(Queue),LB_ADDSTRING,0,reinterpret_cast<LPARAM>(p.c_str()));put(Status,std::to_wstring(files.size())+L" file in coda");}
-void addFile(const fs::path& p){
-    auto ext=p.extension().wstring();std::transform(ext.begin(),ext.end(),ext.begin(),towlower);
-    std::error_code ec;if(ext!=L".mkv"||!fs::is_regular_file(p,ec))return;
-    auto absolute=fs::absolute(p).lexically_normal();
-    if(std::none_of(files.begin(),files.end(),[&](auto& f){return _wcsicmp(f.c_str(),absolute.c_str())==0;}))files.push_back(absolute);
+std::wstring errorText(const std::exception& e) { return widen(e.what()); }
+
+HWND make(const wchar_t* cls, const wchar_t* text, int id, int x, int y, int w, int h, DWORD style = 0, int anchors = 0) {
+    bool edge = wcscmp(cls, L"EDIT") == 0 || wcscmp(cls, WC_LISTVIEWW) == 0;
+    HWND c = CreateWindowExW(edge ? WS_EX_CLIENTEDGE : 0, cls, text, WS_CHILD | WS_VISIBLE | style, px(x), px(y), px(w), px(h), window,
+                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
+    SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    controls.push_back({c, x, y, w, h, anchors, buildingPage});
+    return c;
 }
-void addPath(const fs::path& p){std::error_code ec;if(fs::is_directory(p,ec)){for(fs::directory_iterator it(p,ec),end;!ec&&it!=end;it.increment(ec))addFile(it->path());}else addFile(p);}
-void chooseFiles(){
-    std::vector<wchar_t> buf(65536);OPENFILENAMEW o{sizeof(o)};o.hwndOwner=window;o.lpstrFilter=L"Matroska (*.mkv)\0*.mkv\0\0";o.lpstrFile=buf.data();o.nMaxFile=static_cast<DWORD>(buf.size());o.Flags=OFN_ALLOWMULTISELECT|OFN_EXPLORER|OFN_FILEMUSTEXIST|OFN_NOCHANGEDIR;
-    if(GetOpenFileNameW(&o)){fs::path first(buf.data());auto p=buf.data()+wcslen(buf.data())+1;if(!*p)addFile(first);else for(;*p;p+=wcslen(p)+1)addFile(first/p);refresh();}
+void label(const wchar_t* text, int x, int y, int w, int anchors = 0) { make(L"STATIC", text, 0, x, y, w, 20, SS_NOPREFIX, anchors); }
+HWND button(const wchar_t* text, int id, int x, int y, int w, int anchors = 0, DWORD style = 0) {
+    return make(L"BUTTON", text, id, x, y, w, 28, WS_TABSTOP | style, anchors);
 }
-std::wstring folder(){
-    IFileDialog* dialog=nullptr;std::wstring result;
-    if(SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))){
-        DWORD flags;dialog->GetOptions(&flags);dialog->SetOptions(flags|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM);
-        if(SUCCEEDED(dialog->Show(window))){IShellItem* item=nullptr;if(SUCCEEDED(dialog->GetResult(&item))){PWSTR path=nullptr;if(SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&path))){result=path;CoTaskMemFree(path);}item->Release();}}dialog->Release();
-    }return result;
+HWND checkbox(const wchar_t* text, int id, int x, int y, int w, int anchors = 0) {
+    return make(L"BUTTON", text, id, x, y, w, 24, WS_TABSTOP | BS_AUTOCHECKBOX, anchors);
 }
-std::wstring readSetting(const wchar_t* key,const wchar_t* fallback){std::vector<wchar_t> b(32768);GetPrivateProfileStringW(L"Settings",key,fallback,b.data(),static_cast<DWORD>(b.size()),settings.c_str());return b.data();}
-void saveSettings(){for(auto pair:{std::pair{Tools,L"Tools"},std::pair{Output,L"Output"},std::pair{Pattern,L"Pattern"}})WritePrivateProfileStringW(L"Settings",pair.second,get(pair.first).c_str(),settings.c_str());}
-Options options(){
-    Options o;o.tools=get(Tools);o.output=get(Output);o.pattern=get(Pattern);o.title=get(Title);o.setTitle=checked(SetTitle);o.remux=checked(Remux);o.rules=parseRules(get(Rules));
-    if(!o.tools.is_absolute()||!fs::is_regular_file(o.tools/L"mkvmerge.exe")||!fs::is_regular_file(o.tools/L"mkvpropedit.exe"))throw std::runtime_error("Selezionare la cartella MKVToolNix con mkvmerge.exe e mkvpropedit.exe");
-    if(!o.output.is_absolute())throw std::runtime_error("Scegliere un percorso assoluto per la cartella output");
-    if(o.pattern.find(L"{crc}")==o.pattern.npos)throw std::runtime_error("Il modello nome deve contenere {crc}");
-    auto validateTokens=[](std::wstring s,bool title){for(auto token:{L"{name}",L"{n}",L"{crc}"}){if(title&&std::wstring(token)==L"{crc}")continue;size_t p;while((p=s.find(token))!=s.npos)s.erase(p,wcslen(token));}if(s.find_first_of(L"{}")!=s.npos)throw std::runtime_error("Token sconosciuto: usare {name}, {n}, {crc}; il titolo non accetta {crc}");};
-    validateTokens(o.pattern,false);if(o.setTitle)validateTokens(o.title,true);
-    for(size_t i=0;i<files.size();++i)fileName(expand(o.pattern,files[i].stem().wstring(),i+1,L"00000000"));return o;
-}
-std::wstring errorText(const std::exception& e){std::string s=e.what();int n=MultiByteToWideChar(CP_UTF8,0,s.c_str(),-1,nullptr,0);std::wstring w(n,L'\0');MultiByteToWideChar(CP_UTF8,0,s.c_str(),-1,w.data(),n);if(!w.empty())w.pop_back();return w;}
-void launch(bool inspect){
-    if(files.empty())throw std::runtime_error("Aggiungere almeno un file MKV");
-    Options o;
-    fs::path input;
-    if(inspect){o.tools=get(Tools);if(!o.tools.is_absolute()||!fs::exists(o.tools/L"mkvmerge.exe"))throw std::runtime_error("Impostare la cartella MKVToolNix");int index=static_cast<int>(SendMessageW(control(Queue),LB_GETCURSEL,0,0));input=files[index==LB_ERR?0:index];}
-    else o=options();
-    if(inspect)showPage(3);
-    saveSettings();auto batch=files;cancelled=false;setBusy(true);SetWindowTextW(control(LogBox),L"");
-    try{worker=std::thread([o,batch,input,inspect]{
-        size_t ok=0,failed=0;
-        try{
-            if(inspect){emit(L"Analisi: "+input.wstring());auto rc=run(o.tools/L"mkvmerge.exe",{L"--output-charset",L"UTF-8",L"-J",input.wstring()},cancelled,emit);if(rc>1)throw std::runtime_error("Analisi MKV fallita");}
-            else for(size_t i=0;i<batch.size()&&!cancelled;++i){
-                emit(L"\r\n["+std::to_wstring(i+1)+L"/"+std::to_wstring(batch.size())+L"] "+batch[i].wstring());
-                try{auto target=process(batch[i],i+1,o,cancelled,emit);++ok;emit(L"Salvato: "+target.wstring());}
-                catch(const std::exception& e){++failed;emit(L"ERRORE: "+errorText(e));}
-            }
-        }catch(const std::exception& e){emit(L"ERRORE: "+errorText(e));}
-        if(!inspect)emit(L"\r\nRiepilogo: "+std::to_wstring(ok)+L" completati, "+std::to_wstring(failed)+L" falliti; "+(cancelled?L"batch annullato":L"fine batch"));
-        PostMessageW(window,DoneMessage,0,0);
-    });}catch(...){setBusy(false);throw;}
-}
-void addRule(){
-    auto selector=get(RuleType);auto name=get(RuleName);auto lang=get(RuleLang);
-    int d=static_cast<int>(SendMessageW(control(RuleDefault),CB_GETCURSEL,0,0));int f=static_cast<int>(SendMessageW(control(RuleForced),CB_GETCURSEL,0,0));
-    if(name.find_first_of(L"|\r\n")!=name.npos||lang.find_first_of(L"|\r\n")!=lang.npos)throw std::runtime_error("I campi non possono contenere | o ritorni a capo");
-    std::wstring line=selector+L"|"+name+L"|"+lang+L"|"+(d==0?L"":d==1?L"1":L"0")+L"|"+(f==0?L"":f==1?L"1":L"0");
-    parseRules(line);auto current=get(Rules);if(!current.empty())current+=L"\r\n";put(Rules,current+line);
-}
-void build(){
-    dpi=GetDpiForSystem();font=CreateFontW(-MulDiv(14,dpi,96),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
-    label(L"MKV Flow " MKVFLOW_VERSION_W L"  /  Modifica, rinomina, verifica",12,12,610);
-    int nav=NavQueue;for(auto text:{L"Coda",L"Tracce",L"Impostazioni",L"Log"}){make(L"BUTTON",text,nav,12+(nav-NavQueue)*154,40,148,28,WS_TABSTOP|BS_AUTORADIOBUTTON|BS_PUSHLIKE|(nav==NavQueue?WS_GROUP:0));++nav;}
-    buildingPage=0;
-    make(L"BUTTON",L"Aggiungi MKV...",Add,12,80,120,28,WS_TABSTOP);
-    make(L"BUTTON",L"Rimuovi",Remove,140,80,80,28,WS_TABSTOP);
-    make(L"BUTTON",L"Svuota",Clear,228,80,72,28,WS_TABSTOP);
-    make(L"BUTTON",L"Analizza",Inspect,308,80,90,28,WS_TABSTOP);
-    label(L"Trascina qui file MKV o cartelle (non ricorsive).",12,114,610);
-    make(L"LISTBOX",L"",Queue,12,134,612,118,WS_TABSTOP|WS_VSCROLL|WS_HSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|WS_BORDER,true);
-    label(L"Output",12,270,76);make(L"EDIT",L"",Output,88,266,434,26,WS_TABSTOP|ES_AUTOHSCROLL,true);make(L"BUTTON",L"Sfoglia...",OutputBrowse,530,266,94,26,WS_TABSTOP);
-    label(L"Nome",12,304,76);make(L"EDIT",L"{name} [{crc}]",Pattern,88,300,536,26,WS_TABSTOP|ES_AUTOHSCROLL,true);
-    make(L"BUTTON",L"Remux (disattiva per copia + modifica)",Remux,12,338,500,24,WS_TABSTOP|BS_AUTOCHECKBOX);SendMessageW(control(Remux),BM_SETCHECK,BST_CHECKED,0);
-    label(L"Nome: {name}  |  Indice: {n}  |  CRC32: {crc}  |  .mkv automatico",12,374,612);
-    buildingPage=1;
-    make(L"BUTTON",L"Imposta titolo",SetTitle,12,84,138,24,WS_TABSTOP|BS_AUTOCHECKBOX);make(L"EDIT",L"{name}",Title,158,82,466,26,WS_TABSTOP|ES_AUTOHSCROLL,true);
-    label(L"Regole comuni al batch: a1 = primo audio, s1 = primi sottotitoli, v1 = primo video.",12,120,612);
-    label(L"Selettore",12,150,68);label(L"Nome traccia",88,150,180);label(L"Lingua",280,150,68);label(L"Predefinita",356,150,110);label(L"Forzata",480,150,110);
-    make(L"EDIT",L"a1",RuleType,12,172,64,26,WS_TABSTOP|ES_AUTOHSCROLL);make(L"EDIT",L"",RuleName,88,172,180,26,WS_TABSTOP|ES_AUTOHSCROLL);make(L"EDIT",L"ita",RuleLang,280,172,64,26,WS_TABSTOP|ES_AUTOHSCROLL);
-    for(int id:{RuleDefault,RuleForced}){make(L"COMBOBOX",L"",id,id==RuleDefault?356:480,172,112,150,WS_TABSTOP|CBS_DROPDOWNLIST);for(auto text:{L"Conserva",L"Sì",L"No"})SendMessageW(control(id),CB_ADDSTRING,0,reinterpret_cast<LPARAM>(text));SendMessageW(control(id),CB_SETCURSEL,0,0);}
-    make(L"BUTTON",L"Aggiungi regola",RuleAdd,12,210,142,28,WS_TABSTOP);
-    label(L"selettore|nome|lingua|default|forced   —   vuoto = conserva; <vuoto> rimuove il nome",12,246,612);
-    make(L"EDIT",L"",Rules,12,270,612,124,WS_TABSTOP|ES_MULTILINE|ES_AUTOVSCROLL|WS_VSCROLL|ES_WANTRETURN,true);
-    buildingPage=2;
-    label(L"Cartella MKVToolNix",12,90,610);
-    make(L"EDIT",L"",Tools,12,116,502,26,WS_TABSTOP|ES_AUTOHSCROLL,true);make(L"BUTTON",L"Sfoglia...",ToolsBrowse,524,116,100,26,WS_TABSTOP);
-    make(L"STATIC",L"Seleziona la cartella con mkvmerge.exe e mkvpropedit.exe.\r\nMKVToolNix resta esterno al programma.",0,12,160,612,50);
-    make(L"STATIC",L"Gli originali restano intatti. Il CRC32 viene calcolato dopo tutte le modifiche.\r\nI nomi esistenti non vengono sovrascritti.",0,12,224,612,50);
-    buildingPage=3;
-    make(L"EDIT",L"",LogBox,12,84,612,310,WS_TABSTOP|ES_MULTILINE|ES_READONLY|WS_VSCROLL|ES_AUTOVSCROLL,true);SendMessageW(control(LogBox),EM_SETLIMITTEXT,220000,0);
-    buildingPage=-1;
-    make(L"BUTTON",L"Avvia batch",Start,12,414,112,32,WS_TABSTOP|BS_DEFPUSHBUTTON);make(L"BUTTON",L"Annulla",Cancel,132,414,90,32,WS_TABSTOP);EnableWindow(control(Cancel),FALSE);
-    make(L"STATIC",L"Pronto",Status,236,422,388,22,0,true);
-    PWSTR local=nullptr;if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&local))){settings=fs::path(local)/L"MKVFlow";CoTaskMemFree(local);fs::create_directories(settings);settings/=L"settings.ini";
-        if(!fs::exists(settings)){std::ofstream ini(settings,std::ios::binary);ini.put(static_cast<char>(0xFF));ini.put(static_cast<char>(0xFE));}}
-    put(Tools,readSetting(L"Tools",L"C:\\Program Files\\MKVToolNix"));put(Output,readSetting(L"Output",L""));put(Pattern,readSetting(L"Pattern",L"{name} [{crc}]"));
-    DragAcceptFiles(window,TRUE);showPage(0);
-}
-LRESULT CALLBACK procedure(HWND hwnd,UINT msg,WPARAM w,LPARAM l){
-    try{switch(msg){
-    case WM_CREATE:window=hwnd;build();return 0;
-    case WM_SIZE:layout();return 0;
-    case WM_GETMINMAXINFO:{RECT bounds{0,0,MulDiv(640,dpi,96),MulDiv(460,dpi,96)};AdjustWindowRectEx(&bounds,WS_OVERLAPPEDWINDOW,FALSE,0);reinterpret_cast<MINMAXINFO*>(l)->ptMinTrackSize={bounds.right-bounds.left,bounds.bottom-bounds.top};return 0;}
-    case WM_DROPFILES:{HDROP drop=reinterpret_cast<HDROP>(w);if(!busy){UINT n=DragQueryFileW(drop,0xFFFFFFFF,nullptr,0);for(UINT i=0;i<n;++i){std::vector<wchar_t> p(DragQueryFileW(drop,i,nullptr,0)+1);DragQueryFileW(drop,i,p.data(),static_cast<UINT>(p.size()));addPath(p.data());}refresh();}DragFinish(drop);return 0;}
-    case WM_COMMAND:if(HIWORD(w)>1)return 0;switch(LOWORD(w)){
-        case NavQueue:case NavTracks:case NavSettings:case NavLog:showPage(LOWORD(w)-NavQueue);break;
-        case Add:chooseFiles();break;
-        case Clear:files.clear();refresh();break;
-        case Remove:{int i=static_cast<int>(SendMessageW(control(Queue),LB_GETCURSEL,0,0));if(i!=LB_ERR)files.erase(files.begin()+i);refresh();break;}
-        case ToolsBrowse:case OutputBrowse:{auto p=folder();if(!p.empty())put(LOWORD(w)==ToolsBrowse?Tools:Output,p);break;}
-        case RuleAdd:addRule();break;case Start:launch(false);break;case Inspect:launch(true);break;case Cancel:cancelled=true;put(Status,L"Annullamento in corso...");break;
-    }return 0;
-    case LogMessage:{std::unique_ptr<std::wstring> s(reinterpret_cast<std::wstring*>(l));logText(*s);return 0;}
-    case DoneMessage:if(worker.joinable())worker.join();setBusy(false);put(Status,cancelled?L"Annullato — consulta il log":L"Operazione terminata — consulta il log");if(closeAfter)SendMessageW(hwnd,WM_CLOSE,0,0);return 0;
-    case WM_CLOSE:if(busy){closeAfter=true;cancelled=true;put(Status,L"Chiusura dopo annullamento...");return 0;}saveSettings();DestroyWindow(hwnd);return 0;
-    case WM_DESTROY:DeleteObject(font);PostQuitMessage(0);return 0;
-    }}catch(const std::exception& e){MessageBoxW(hwnd,errorText(e).c_str(),L"MKV Flow",MB_OK|MB_ICONERROR);}
-    return DefWindowProcW(hwnd,msg,w,l);
-}
-}
-int WINAPI wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int show){
-    instance=h;SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
-    CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);INITCOMMONCONTROLSEX cc{sizeof(cc),ICC_STANDARD_CLASSES};InitCommonControlsEx(&cc);
-    WNDCLASSW wc{};wc.lpfnWndProc=procedure;wc.hInstance=h;wc.lpszClassName=L"MKVFlowWindow";wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.hbrBackground=reinterpret_cast<HBRUSH>(COLOR_BTNFACE+1);wc.hIcon=LoadIconW(h,MAKEINTRESOURCEW(1));RegisterClassW(&wc);
-    dpi=GetDpiForSystem();RECT bounds{0,0,MulDiv(640,dpi,96),MulDiv(460,dpi,96)};AdjustWindowRectEx(&bounds,WS_OVERLAPPEDWINDOW,FALSE,0);HWND hwnd=CreateWindowExW(0,wc.lpszClassName,L"MKV Flow " MKVFLOW_VERSION_W L" — MKV batch tools",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,bounds.right-bounds.left,bounds.bottom-bounds.top,nullptr,nullptr,h,nullptr);if(!hwnd){CoUninitialize();return 1;}
-    ShowWindow(hwnd,show);MSG m{};while(GetMessageW(&m,nullptr,0,0)>0){if(!IsDialogMessageW(hwnd,&m)){TranslateMessage(&m);DispatchMessageW(&m);}}
-    CoUninitialize();return static_cast<int>(m.wParam);
+HWND edit(const wchar_t* text, int id, int x, int y, int w, int anchors = 0) {
+    return make(L"EDIT", text, id, x, y, w, 26, WS_TABSTOP | ES_AUTOHSCROLL, anchors);
 }
 
+HWND listView(int id, int x, int y, int w, int h, DWORD style, DWORD exStyle, std::initializer_list<std::pair<const wchar_t*, int>> columns) {
+    HWND list = make(WC_LISTVIEWW, L"", id, x, y, w, h, WS_TABSTOP | LVS_REPORT | LVS_SHOWSELALWAYS | style, GrowW | GrowH);
+    SetWindowTheme(list, L"Explorer", nullptr);
+    ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP | exStyle);
+    int i = 0;
+    for (const auto& [title, width] : columns) {
+        LVCOLUMNW c{};
+        c.mask = LVCF_TEXT | LVCF_WIDTH;
+        c.pszText = const_cast<wchar_t*>(title);
+        c.cx = px(width);
+        ListView_InsertColumn(list, i++, &c);
+    }
+    return list;
+}
+// La colonna `stretch` occupa lo spazio libero della lista.
+void fitColumn(int id, int stretch) {
+    HWND list = control(id);
+    RECT r;
+    GetClientRect(list, &r);
+    HWND header = ListView_GetHeader(list);
+    int count = Header_GetItemCount(header), others = 0;
+    for (int i = 0; i < count; ++i) if (i != stretch) others += ListView_GetColumnWidth(list, i);
+    ListView_SetColumnWidth(list, stretch, (std::max)(px(120), static_cast<int>(r.right) - others));
+}
+void setRow(HWND list, int row, int col, const std::wstring& text) {
+    ListView_SetItemText(list, row, col, const_cast<wchar_t*>(text.c_str()));
+}
+int selectedRow(int id) { return ListView_GetNextItem(control(id), -1, LVNI_SELECTED); }
+
+void layout() {
+    RECT r;
+    GetClientRect(window, &r);
+    int dx = (std::max)(0, MulDiv(r.right, 96, dpi) - BaseWidth), dy = (std::max)(0, MulDiv(r.bottom, 96, dpi) - BaseHeight);
+    HDWP batch = BeginDeferWindowPos(static_cast<int>(controls.size()));
+    for (const auto& c : controls) {
+        int x = c.x + ((c.anchors & MoveX) ? dx : 0), y = c.y + ((c.anchors & MoveY) ? dy : 0);
+        int w = c.w + ((c.anchors & GrowW) ? dx : 0), h = c.hgt + ((c.anchors & GrowH) ? dy : 0);
+        if (batch) batch = DeferWindowPos(batch, c.h, nullptr, px(x), px(y), px(w), px(h), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (batch) EndDeferWindowPos(batch);
+    fitColumn(Queue, 0);
+    fitColumn(Tracks, 4);
+}
+
+void showPage(int page) {
+    currentPage = page;
+    for (const auto& c : controls) ShowWindow(c.h, c.page < 0 || c.page == page ? SW_SHOW : SW_HIDE);
+    for (int i = 0; i < 4; ++i) check(NavQueue + i, i == page);
+}
+
+// ---------------------------------------------------------------------------
+// Coda
+// ---------------------------------------------------------------------------
+std::wstring externalsText(const Job& job) {
+    size_t n = job.sources.size() - 1;
+    return n ? std::to_wstring(n) : std::wstring();
+}
+void queueRow(size_t i) {
+    HWND list = control(Queue);
+    const auto& job = items[i].job;
+    setRow(list, static_cast<int>(i), 0, job.input().filename().wstring());
+    setRow(list, static_cast<int>(i), 1, summary(job) + (job.customized ? L"  ✎" : L""));
+    setRow(list, static_cast<int>(i), 2, externalsText(job));
+    setRow(list, static_cast<int>(i), 3, items[i].state);
+}
+void refreshJobCombo() {
+    HWND combo = control(JobCombo);
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    for (size_t i = 0; i < items.size(); ++i) {
+        auto text = std::to_wstring(i + 1) + L". " + items[i].job.input().filename().wstring();
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text.c_str()));
+    }
+    if (current >= static_cast<int>(items.size())) current = static_cast<int>(items.size()) - 1;
+    if (current < 0 && !items.empty()) current = 0;
+    SendMessageW(combo, CB_SETCURSEL, current, 0);
+}
+void fillTracks();
+void refreshQueue() {
+    HWND list = control(Queue);
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    for (size_t i = 0; i < items.size(); ++i) {
+        LVITEMW it{};
+        it.mask = LVIF_TEXT;
+        it.iItem = static_cast<int>(i);
+        it.pszText = const_cast<wchar_t*>(L"");
+        ListView_InsertItem(list, &it);
+        queueRow(i);
+    }
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    refreshJobCombo();
+    fillTracks();
+    status(std::to_wstring(items.size()) + L" file in coda");
+}
+bool addFile(const fs::path& p) {
+    std::error_code ec;
+    if (_wcsicmp(p.extension().c_str(), L".mkv") != 0 || !fs::is_regular_file(p, ec)) return false;
+    auto absolute = fs::absolute(p).lexically_normal();
+    for (const auto& item : items)
+        if (_wcsicmp(item.job.input().c_str(), absolute.c_str()) == 0) return false;
+    items.push_back({makeJob(absolute)});
+    return true;
+}
+void addPath(const fs::path& p) {
+    std::error_code ec;
+    if (fs::is_directory(p, ec)) {
+        std::vector<fs::path> found;
+        for (fs::directory_iterator it(p, ec), end; !ec && it != end; it.increment(ec)) found.push_back(it->path());
+        std::sort(found.begin(), found.end(), [](const fs::path& a, const fs::path& b) { return _wcsicmp(a.c_str(), b.c_str()) < 0; });
+        for (const auto& f : found) addFile(f);
+    } else addFile(p);
+}
+std::vector<fs::path> openFiles(const wchar_t* filter) {
+    std::vector<wchar_t> buf(1 << 17);
+    OPENFILENAMEW o{sizeof(o)};
+    o.hwndOwner = window;
+    o.lpstrFilter = filter;
+    o.lpstrFile = buf.data();
+    o.nMaxFile = static_cast<DWORD>(buf.size());
+    o.Flags = OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+    std::vector<fs::path> result;
+    if (!GetOpenFileNameW(&o)) return result;
+    fs::path first(buf.data());
+    auto p = buf.data() + wcslen(buf.data()) + 1;
+    if (!*p) result.push_back(first);
+    else for (; *p; p += wcslen(p) + 1) result.push_back(first / p);
+    return result;
+}
+std::wstring folder() {
+    IFileDialog* dialog = nullptr;
+    std::wstring result;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+        DWORD flags;
+        dialog->GetOptions(&flags);
+        dialog->SetOptions(flags | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        if (SUCCEEDED(dialog->Show(window))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) { result = path; CoTaskMemFree(path); }
+                item->Release();
+            }
+        }
+        dialog->Release();
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Editor dei flussi
+// ---------------------------------------------------------------------------
+Job* currentJob() { return current >= 0 && current < static_cast<int>(items.size()) ? &items[current].job : nullptr; }
+
+bool changed(const Job& job, const TrackEdit& e) {
+    const auto& st = job.sourceTrack(e);
+    return e.name != st.name || e.language != st.language || e.isDefault != st.isDefault || e.forced != st.forced || e.delayMs;
+}
+void trackRow(int row) {
+    const Job* job = currentJob();
+    if (!job || row < 0 || row >= static_cast<int>(job->tracks.size())) return;
+    HWND list = control(Tracks);
+    const auto& e = job->tracks[row];
+    const auto& st = job->sourceTrack(e);
+    bool wasFilling = filling;
+    filling = true;
+    setRow(list, row, 0, std::to_wstring(row + 1) + (changed(*job, e) ? L" ✎" : L""));
+    setRow(list, row, 1, kindName(st.kind) + (e.source == 0 ? L" " + std::to_wstring(st.ordinal) : L""));
+    setRow(list, row, 2, st.codec);
+    setRow(list, row, 3, (e.language.empty() ? L"—" : e.language) + (validLanguage(e.language) ? L"" : L" ⚠"));
+    setRow(list, row, 4, e.name);
+    setRow(list, row, 5, e.isDefault ? L"Sì" : L"");
+    setRow(list, row, 6, e.forced ? L"Sì" : L"");
+    setRow(list, row, 7, e.delayMs ? (e.delayMs > 0 ? L"+" : L"") + std::to_wstring(e.delayMs) + L" ms" : L"");
+    setRow(list, row, 8, st.info);
+    setRow(list, row, 9, e.source == 0 ? L"MKV · ID " + std::to_wstring(st.id) : job->sources[e.source].path.filename().wstring());
+    ListView_SetCheckState(list, row, e.keep);
+    filling = wasFilling;
+}
+void fillPanel() {
+    const Job* job = currentJob();
+    int row = selectedRow(Tracks);
+    bool valid = job && row >= 0 && row < static_cast<int>(job->tracks.size()) && !busy;
+    filling = true;
+    for (int id : {EditName, EditLang, EditDefault, EditForced, EditDelay, MoveUp, MoveDown}) EnableWindow(control(id), valid);
+    EnableWindow(control(RemoveExternal), valid && job->tracks[row].source > 0);
+    if (valid) {
+        const auto& e = job->tracks[row];
+        put(EditName, e.name);
+        put(EditLang, e.language);
+        check(EditDefault, e.isDefault);
+        check(EditForced, e.forced);
+        put(EditDelay, std::to_wstring(e.delayMs));
+    } else {
+        put(EditName, L"");
+        put(EditLang, L"");
+        check(EditDefault, false);
+        check(EditForced, false);
+        put(EditDelay, L"");
+    }
+    filling = false;
+}
+void fillTracks() {
+    HWND list = control(Tracks);
+    const Job* job = currentJob();
+    int keep = selectedRow(Tracks);
+    filling = true;
+    SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(list);
+    if (job) {
+        for (size_t i = 0; i < job->tracks.size(); ++i) {
+            LVITEMW it{};
+            it.mask = LVIF_TEXT;
+            it.iItem = static_cast<int>(i);
+            it.pszText = const_cast<wchar_t*>(L"");
+            ListView_InsertItem(list, &it);
+            trackRow(static_cast<int>(i));
+        }
+        if (keep >= 0 && keep < static_cast<int>(job->tracks.size()))
+            ListView_SetItemState(list, keep, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    }
+    SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+    filling = false;
+    fillPanel();
+    if (!job) status(L"Aggiungere un file MKV nella scheda Coda");
+    else if (!job->sources.front().analyzed) status(L"File non ancora analizzato: premere Analizza");
+}
+void touched() {
+    if (Job* job = currentJob()) {
+        job->customized = true;
+        queueRow(static_cast<size_t>(current));
+    }
+}
+void selectTrack(int row) {
+    HWND list = control(Tracks);
+    ListView_SetItemState(list, -1, 0, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_SetItemState(list, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(list, row, FALSE);
+}
+void moveTrack(int delta) {
+    Job* job = currentJob();
+    int row = selectedRow(Tracks), to = row + delta;
+    if (!job || busy || row < 0 || to < 0 || to >= static_cast<int>(job->tracks.size())) return;
+    std::swap(job->tracks[row], job->tracks[to]);
+    trackRow(row);
+    trackRow(to);
+    selectTrack(to);
+    touched();
+}
+void editSelected(const std::function<void(Job&, TrackEdit&, int)>& change) {
+    Job* job = currentJob();
+    int row = selectedRow(Tracks);
+    if (filling || busy || !job || row < 0 || row >= static_cast<int>(job->tracks.size())) return;
+    change(*job, job->tracks[row], row);
+    trackRow(row);
+    touched();
+}
+
+// ---------------------------------------------------------------------------
+// Impostazioni persistenti
+// ---------------------------------------------------------------------------
+std::wstring readSetting(const wchar_t* key, const wchar_t* fallback) {
+    std::vector<wchar_t> b(32768);
+    GetPrivateProfileStringW(L"Settings", key, fallback, b.data(), static_cast<DWORD>(b.size()), settings.c_str());
+    return b.data();
+}
+void saveSettings() {
+    if (settings.empty()) return;
+    for (auto [id, key] : {std::pair{Tools, L"Tools"}, std::pair{Output, L"Output"}, std::pair{Pattern, L"Pattern"}, std::pair{LangFilter, L"Languages"}})
+        WritePrivateProfileStringW(L"Settings", key, get(id).c_str(), settings.c_str());
+    for (auto [id, key] : {std::pair{FastCopy, L"FastCopy"}, std::pair{Exclusive, L"ExclusiveDefault"}, std::pair{NoChapters, L"NoChapters"},
+                           std::pair{NoAttachments, L"NoAttachments"}, std::pair{NoTags, L"NoGlobalTags"}})
+        WritePrivateProfileStringW(L"Settings", key, checked(id) ? L"1" : L"0", settings.c_str());
+}
+fs::path toolsFolder() {
+    fs::path tools = get(Tools);
+    if (!tools.is_absolute() || !fs::is_regular_file(tools / L"mkvmerge.exe") || !fs::is_regular_file(tools / L"mkvpropedit.exe"))
+        throw std::runtime_error("Selezionare nella scheda Impostazioni la cartella MKVToolNix con mkvmerge.exe e mkvpropedit.exe");
+    return tools;
+}
+Options options() {
+    Options o;
+    o.tools = toolsFolder();
+    o.output = get(Output);
+    o.pattern = get(Pattern);
+    o.title = get(Title);
+    o.setTitle = checked(SetTitle);
+    o.fastCopy = checked(FastCopy);
+    o.noChapters = checked(NoChapters);
+    o.noAttachments = checked(NoAttachments);
+    o.noGlobalTags = checked(NoTags);
+    if (!o.output.is_absolute()) throw std::runtime_error("Scegliere nella scheda Coda un percorso assoluto per la cartella output");
+    if (o.pattern.find(L"{crc}") == o.pattern.npos) throw std::runtime_error("Il modello nome deve contenere {crc}");
+    auto validateTokens = [](std::wstring s, bool title) {
+        for (auto token : {L"{name}", L"{n}", L"{crc}"}) {
+            if (title && std::wstring(token) == L"{crc}") continue;
+            size_t p;
+            while ((p = s.find(token)) != s.npos) s.erase(p, wcslen(token));
+        }
+        if (s.find_first_of(L"{}") != s.npos) throw std::runtime_error("Token sconosciuto: usare {name}, {n}, {crc}; il titolo non accetta {crc}");
+    };
+    validateTokens(o.pattern, false);
+    if (o.setTitle) validateTokens(o.title, true);
+    for (size_t i = 0; i < items.size(); ++i) fileName(expand(o.pattern, items[i].job.input().stem().wstring(), i + 1, L"00000000"));
+    return o;
+}
+
+// ---------------------------------------------------------------------------
+// Lavori in background
+// ---------------------------------------------------------------------------
+void setBusy(bool value) {
+    busy = value;
+    for (const auto& c : controls) if (GetDlgCtrlID(c.h) > 0) EnableWindow(c.h, !value);
+    for (int id : {LogBox, NavQueue, NavTracks, NavSettings, NavLog, Status, ProgressBar}) EnableWindow(control(id), TRUE);
+    EnableWindow(control(Cancel), value);
+    if (!value) fillPanel();
+}
+void runWorker(std::function<void()> body) {
+    cancelled = false;
+    setBusy(true);
+    try {
+        worker = std::thread([body] {
+            try { body(); } catch (const std::exception& e) { emit(L"ERRORE: " + errorText(e)); }
+            PostMessageW(window, DoneMessage, 0, 0);
+        });
+    } catch (...) {
+        setBusy(false);
+        throw;
+    }
+}
+
+struct Pending { size_t job, source; fs::path path; };
+// Analizza le sorgenti indicate (o tutte quelle non ancora analizzate).
+void launchAnalysis(std::vector<Pending> work) {
+    if (work.empty()) {
+        for (size_t j = 0; j < items.size(); ++j)
+            for (size_t s = 0; s < items[j].job.sources.size(); ++s)
+                if (!items[j].job.sources[s].analyzed) work.push_back({j, s, items[j].job.sources[s].path});
+    }
+    if (work.empty()) {
+        status(L"Tutti i file sono già analizzati");
+        if (startAfterAnalysis) PostMessageW(window, DoneMessage, 1, 0);
+        return;
+    }
+    auto tools = toolsFolder();
+    for (const auto& w : work)
+        if (w.source == 0) { items[w.job].state = L"Analisi..."; queueRow(w.job); }
+    SendMessageW(control(ProgressBar), PBM_SETPOS, 0, 0);
+    status(L"Analisi di " + std::to_wstring(work.size()) + L" file...");
+    runWorker([work, tools] {
+        for (size_t i = 0; i < work.size() && !cancelled; ++i) {
+            auto* a = new Analyzed{work[i].job, work[i].source, work[i].path};
+            try { a->result = analyze(tools, work[i].path, cancelled); }
+            catch (const std::exception& e) { a->error = errorText(e); }
+            post(AnalyzedMessage, 0, a);
+            PostMessageW(window, ProgressMessage, static_cast<WPARAM>((i + 1) * 1000 / work.size()), 0);
+        }
+    });
+}
+void analyzed(std::unique_ptr<Analyzed> a) {
+    if (a->job >= items.size()) return;
+    auto& item = items[a->job];
+    auto& job = item.job;
+    if (a->source >= job.sources.size() || _wcsicmp(job.sources[a->source].path.c_str(), a->path.c_str()) != 0) return;
+    auto name = a->path.filename().wstring();
+    if (!a->result) {
+        emit(L"ERRORE analisi " + name + L": " + a->error);
+        if (a->source > 0) {
+            removeSource(job, a->source);
+            emit(L"  traccia esterna ignorata.");
+        } else item.state = L"Errore analisi";
+    } else {
+        auto& src = job.sources[a->source];
+        bool firstMain = a->source == 0 && !src.analyzed;
+        Source fresh = std::move(*a->result);
+        fresh.languageHint = src.languageHint;
+        fresh.forcedHint = src.forcedHint;
+        src = std::move(fresh);
+        if (firstMain) {
+            resetEdits(job);
+            if (model) {
+                auto warnings = applyTemplate(job, *model);
+                if (!warnings.empty()) emit(L"Modello su " + name + L": " + warnings);
+                item.state = warnings.empty() ? L"Pronto (modello)" : L"Pronto — differenze";
+            } else item.state = L"Pronto";
+        } else syncEdits(job);
+        if (a->source == 0 && item.state.rfind(L"Pronto", 0) != 0) item.state = L"Pronto";
+        emit(L"Analizzato " + name + L": " + std::to_wstring(src.tracks.size()) + L" tracce");
+    }
+    queueRow(a->job);
+    if (static_cast<int>(a->job) == current) fillTracks();
+}
+
+void launchBatch() {
+    auto o = options();
+    saveSettings();
+    std::vector<Job> batch;
+    for (const auto& item : items) batch.push_back(item.job);
+    SetWindowTextW(control(LogBox), L"");
+    SendMessageW(control(ProgressBar), PBM_SETPOS, 0, 0);
+    batchRunning = true;
+    status(L"Elaborazione in corso...");
+    runWorker([o, batch] {
+        size_t ok = 0, failed = 0, n = batch.size();
+        for (size_t i = 0; i < n && !cancelled; ++i) {
+            emit(L"\r\n[" + std::to_wstring(i + 1) + L"/" + std::to_wstring(n) + L"] " + batch[i].input().wstring());
+            postState(i, L"In corso...");
+            try {
+                auto target = process(batch[i], i + 1, o, cancelled, emit, [i, n](int p) {
+                    PostMessageW(window, ProgressMessage, static_cast<WPARAM>((i * 100 + p) * 10 / n), 0);
+                });
+                ++ok;
+                emit(L"Salvato: " + target.wstring());
+                postState(i, L"✔ " + target.filename().wstring());
+            } catch (const std::exception& e) {
+                ++failed;
+                emit(L"ERRORE: " + errorText(e));
+                postState(i, cancelled ? L"Annullato" : L"✖ Errore (vedi Log)");
+            }
+        }
+        emit(L"\r\nRiepilogo: " + std::to_wstring(ok) + L" completati, " + std::to_wstring(failed) + L" falliti; " +
+             (cancelled ? L"batch annullato" : L"fine batch"));
+    });
+}
+
+void start() {
+    if (items.empty()) throw std::runtime_error("Aggiungere almeno un file MKV");
+    options();  // controlla subito percorsi e nomi
+    bool pending = std::any_of(items.begin(), items.end(), [](const Item& i) { return !i.job.analyzed(); });
+    if (pending) {
+        startAfterAnalysis = true;
+        try { launchAnalysis({}); } catch (...) { startAfterAnalysis = false; throw; }
+    } else launchBatch();
+}
+
+// ---------------------------------------------------------------------------
+// Comandi
+// ---------------------------------------------------------------------------
+void addExternals(const std::vector<fs::path>& files) {
+    Job* job = currentJob();
+    if (!job) throw std::runtime_error("Selezionare prima un file MKV della coda");
+    std::vector<Pending> work;
+    for (const auto& f : files) {
+        if (!isExternalTrackFile(f)) { emit(L"Ignorato (formato non previsto): " + f.filename().wstring()); continue; }
+        size_t before = job->sources.size();
+        size_t s = addExternal(*job, f);
+        if (s >= before) work.push_back({static_cast<size_t>(current), s, f});
+    }
+    queueRow(static_cast<size_t>(current));
+    if (!work.empty()) launchAnalysis(work);
+}
+void matchCompanions() {
+    std::vector<Pending> work;
+    size_t added = 0;
+    for (size_t j = 0; j < items.size(); ++j) {
+        auto& job = items[j].job;
+        for (const auto& f : findCompanions(job.input())) {
+            size_t before = job.sources.size();
+            size_t s = addExternal(job, f);
+            if (s >= before) { work.push_back({j, s, f}); ++added; emit(L"Abbinato: " + f.filename().wstring() + L" → " + job.input().filename().wstring()); }
+        }
+        queueRow(j);
+    }
+    if (!added) { status(L"Nessuna traccia esterna con lo stesso nome dei video"); return; }
+    status(std::to_wstring(added) + L" tracce esterne abbinate");
+    // Analizza anche i file principali ancora in attesa: servono per l'editor.
+    for (size_t j = 0; j < items.size(); ++j)
+        if (!items[j].job.sources.front().analyzed) work.push_back({j, 0, items[j].job.input()});
+    launchAnalysis(work);
+}
+void applyToAll() {
+    Job* job = currentJob();
+    if (!job || !job->sources.front().analyzed) throw std::runtime_error("Analizzare prima il file da usare come modello");
+    model = makeTemplate(*job);
+    size_t applied = 0, differences = 0;
+    for (size_t j = 0; j < items.size(); ++j) {
+        if (static_cast<int>(j) == current || !items[j].job.sources.front().analyzed) continue;
+        auto warnings = applyTemplate(items[j].job, *model);
+        ++applied;
+        if (!warnings.empty()) {
+            ++differences;
+            emit(L"Modello su " + items[j].job.input().filename().wstring() + L": " + warnings);
+            items[j].state = L"Pronto — differenze";
+        } else items[j].state = L"Pronto (modello)";
+        queueRow(j);
+    }
+    status(L"Layout applicato a " + std::to_wstring(applied) + L" file" +
+           (differences ? L", " + std::to_wstring(differences) + L" con differenze (vedi Log)" : L"") +
+           L"; i file analizzati dopo lo riceveranno automaticamente. Le tracce esterne restano per file.");
+}
+void removeQueued() {
+    std::vector<int> rows;
+    for (int i = -1; (i = ListView_GetNextItem(control(Queue), i, LVNI_SELECTED)) >= 0;) rows.push_back(i);
+    for (auto it = rows.rbegin(); it != rows.rend(); ++it) {
+        items.erase(items.begin() + *it);
+        if (current > *it || current == static_cast<int>(items.size())) --current;
+    }
+    refreshQueue();
+}
+void openJob(int index) {
+    if (index < 0 || index >= static_cast<int>(items.size())) return;
+    current = index;
+    SendMessageW(control(JobCombo), CB_SETCURSEL, current, 0);
+    fillTracks();
+    showPage(1);
+    if (!items[current].job.sources.front().analyzed && !busy) {
+        try { toolsFolder(); launchAnalysis({{static_cast<size_t>(current), 0, items[current].job.input()}}); }
+        catch (const std::exception& e) { status(errorText(e)); }
+    }
+}
+
+void command(int id, int code) {
+    switch (id) {
+    case NavQueue: case NavTracks: case NavSettings: case NavLog: showPage(id - NavQueue); break;
+    case Add: for (const auto& f : openFiles(L"Matroska (*.mkv)\0*.mkv\0\0")) addFile(f); refreshQueue(); break;
+    case Remove: removeQueued(); break;
+    case Clear: items.clear(); current = -1; refreshQueue(); break;
+    case AnalyzeAll: launchAnalysis({}); break;
+    case Companions: matchCompanions(); break;
+    case ToolsBrowse: case OutputBrowse: { auto p = folder(); if (!p.empty()) put(id == ToolsBrowse ? Tools : Output, p); break; }
+    case JobCombo:
+        if (code == CBN_SELCHANGE) { current = static_cast<int>(SendMessageW(control(JobCombo), CB_GETCURSEL, 0, 0)); fillTracks(); }
+        break;
+    case AnalyzeOne:
+        if (Job* job = currentJob()) {
+            std::vector<Pending> work;
+            for (size_t s = 0; s < job->sources.size(); ++s) work.push_back({static_cast<size_t>(current), s, job->sources[s].path});
+            launchAnalysis(work);
+        }
+        break;
+    case Reset:
+        if (Job* job = currentJob()) { resetEdits(*job); queueRow(static_cast<size_t>(current)); fillTracks(); status(L"Flussi ripristinati come nel file originale"); }
+        break;
+    case MoveUp: moveTrack(-1); break;
+    case MoveDown: moveTrack(1); break;
+    case AddExternal:
+        addExternals(openFiles(L"Tracce audio, sottotitoli e video\0*.mka;*.mks;*.ac3;*.eac3;*.ec3;*.dts;*.dtshd;*.thd;*.truehd;*.aac;*.m4a;*.flac;*.opus;*.ogg;*.mp3;*.mp2;*.wav;*.srt;*.ass;*.ssa;*.sup;*.vtt;*.idx;*.usf;*.h264;*.264;*.h265;*.265;*.hevc;*.avc;*.mkv;*.mp4;*.m4v;*.webm\0Tutti i file\0*.*\0\0"));
+        break;
+    case RemoveExternal:
+        if (Job* job = currentJob()) {
+            int row = selectedRow(Tracks);
+            if (row >= 0 && job->tracks[row].source > 0) { removeSource(*job, job->tracks[row].source); touched(); fillTracks(); }
+        }
+        break;
+    case ApplyAll: applyToAll(); break;
+    case FilterApply:
+        if (Job* job = currentJob()) {
+            if (!job->sources.front().analyzed) throw std::runtime_error("Analizzare prima il file");
+            keepLanguages(*job, get(LangFilter));
+            touched();
+            fillTracks();
+            status(L"Audio e sottotitoli filtrati per lingua: verificare la lista, poi eventualmente Applica a tutti i file");
+        }
+        break;
+    case EditName:
+        if (code == EN_CHANGE) editSelected([](Job&, TrackEdit& e, int) { e.name = get(EditName); });
+        break;
+    case EditLang:
+        if (code == CBN_EDITCHANGE) editSelected([](Job&, TrackEdit& e, int) { e.language = get(EditLang); });
+        else if (code == CBN_SELCHANGE) {
+            int i = static_cast<int>(SendMessageW(control(EditLang), CB_GETCURSEL, 0, 0));
+            if (i >= 0 && i < static_cast<int>(std::size(languageChoices))) {
+                std::wstring code3 = std::wstring(languageChoices[i]).substr(0, 3);
+                editSelected([&](Job&, TrackEdit& e, int) { e.language = code3; });
+                PostMessageW(window, LangCodeMessage, 0, 0);
+            }
+        }
+        break;
+    case EditDefault:
+        if (code == BN_CLICKED) {
+            editSelected([](Job& job, TrackEdit&, int row) { setDefault(job, static_cast<size_t>(row), checked(EditDefault), checked(Exclusive)); });
+            if (Job* job = currentJob()) for (int r = 0; r < static_cast<int>(job->tracks.size()); ++r) trackRow(r);
+        }
+        break;
+    case EditForced:
+        if (code == BN_CLICKED) editSelected([](Job&, TrackEdit& e, int) { e.forced = checked(EditForced); });
+        break;
+    case EditDelay:
+        if (code == EN_CHANGE) editSelected([](Job&, TrackEdit& e, int) {
+            auto text = get(EditDelay);
+            wchar_t* end = nullptr;
+            long v = wcstol(text.c_str(), &end, 10);
+            if (text.empty() || text == L"-") v = 0;
+            else if (!end || *end || v < -36000000 || v > 36000000) return;
+            e.delayMs = static_cast<int>(v);
+        });
+        break;
+    case Start: start(); break;
+    case Cancel: cancelled = true; startAfterAnalysis = false; status(L"Annullamento in corso..."); break;
+    }
+}
+
+LRESULT notify(NMHDR* hdr) {
+    if (hdr->idFrom == Queue) {
+        if (hdr->code == NM_DBLCLK) openJob(reinterpret_cast<NMITEMACTIVATE*>(hdr)->iItem);
+        else if (hdr->code == LVN_ITEMCHANGED) {
+            auto* nm = reinterpret_cast<NMLISTVIEW*>(hdr);
+            if ((nm->uChanged & LVIF_STATE) && (nm->uNewState & LVIS_SELECTED) && !busy && nm->iItem != current) {
+                current = nm->iItem;
+                SendMessageW(control(JobCombo), CB_SETCURSEL, current, 0);
+                fillTracks();
+            }
+        } else if (hdr->code == LVN_KEYDOWN && reinterpret_cast<NMLVKEYDOWN*>(hdr)->wVKey == VK_DELETE && !busy) removeQueued();
+    } else if (hdr->idFrom == Tracks && hdr->code == LVN_ITEMCHANGED && !filling) {
+        auto* nm = reinterpret_cast<NMLISTVIEW*>(hdr);
+        if (!(nm->uChanged & LVIF_STATE)) return 0;
+        if ((nm->uNewState ^ nm->uOldState) & LVIS_STATEIMAGEMASK) {
+            Job* job = currentJob();
+            if (job && nm->iItem >= 0 && nm->iItem < static_cast<int>(job->tracks.size()) && !busy) {
+                job->tracks[nm->iItem].keep = ((nm->uNewState & LVIS_STATEIMAGEMASK) >> 12) == 2;
+                touched();
+            }
+        }
+        if ((nm->uNewState ^ nm->uOldState) & LVIS_SELECTED) fillPanel();
+    } else if (hdr->idFrom == Tracks && hdr->code == NM_DBLCLK) {
+        SetFocus(control(EditName));
+        SendMessageW(control(EditName), EM_SETSEL, 0, -1);
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Costruzione della finestra
+// ---------------------------------------------------------------------------
+void build() {
+    dpi = GetDpiForSystem();
+    font = CreateFontW(-MulDiv(14, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    label(L"MKV Flow " MKVFLOW_VERSION_W L"  /  Flussi, rinomina, verifica", 12, 12, 736, GrowW);
+    int nav = NavQueue;
+    for (auto text : {L"Coda", L"Flussi", L"Impostazioni", L"Log"}) {
+        make(L"BUTTON", text, nav, 12 + (nav - NavQueue) * 120, 40, 114, 28,
+             WS_TABSTOP | BS_AUTORADIOBUTTON | BS_PUSHLIKE | (nav == NavQueue ? WS_GROUP : 0));
+        ++nav;
+    }
+
+    buildingPage = 0;  // Coda
+    button(L"Aggiungi MKV...", Add, 12, 80, 124);
+    button(L"Rimuovi", Remove, 140, 80, 80);
+    button(L"Svuota", Clear, 224, 80, 72);
+    button(L"Analizza tutto", AnalyzeAll, 300, 80, 112);
+    button(L"Abbina tracce esterne", Companions, 416, 80, 168);
+    label(L"Trascina qui file MKV o cartelle. Doppio clic su un file per modificarne i flussi.", 12, 114, 736, GrowW);
+    listView(Queue, 12, 134, 736, 232, 0, 0, {{L"File", 380}, {L"Flussi", 150}, {L"Esterni", 60}, {L"Stato", 140}});
+    label(L"Output", 12, 382, 70, MoveY);
+    edit(L"", Output, 86, 378, 556, MoveY | GrowW);
+    button(L"Sfoglia...", OutputBrowse, 650, 377, 98, MoveX | MoveY);
+    label(L"Nome", 12, 416, 70, MoveY);
+    edit(L"{name} [{crc}]", Pattern, 86, 412, 662, MoveY | GrowW);
+    label(L"{name} nome originale  ·  {n} posizione in coda  ·  {crc} CRC32 finale  ·  .mkv aggiunto da solo", 12, 446, 736, MoveY | GrowW);
+
+    buildingPage = 1;  // Flussi
+    label(L"File", 12, 84, 36);
+    make(L"COMBOBOX", L"", JobCombo, 52, 80, 446, 300, WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST, GrowW);
+    button(L"Analizza", AnalyzeOne, 506, 79, 100, MoveX);
+    button(L"Ripristina", Reset, 610, 79, 138, MoveX);
+    button(L"▲ Su", MoveUp, 12, 112, 64);
+    button(L"▼ Giù", MoveDown, 80, 112, 64);
+    button(L"Aggiungi traccia esterna...", AddExternal, 152, 112, 196);
+    button(L"Rimuovi esterna", RemoveExternal, 352, 112, 128);
+    button(L"Applica a tutti i file", ApplyAll, 588, 112, 160, MoveX);
+    listView(Tracks, 12, 146, 736, 194, LVS_SINGLESEL, LVS_EX_CHECKBOXES,
+             {{L"#", 44}, {L"Tipo", 100}, {L"Codec", 100}, {L"Lingua", 64}, {L"Nome", 150}, {L"Pred.", 46}, {L"Forz.", 46},
+              {L"Ritardo", 64}, {L"Dettagli", 96}, {L"Origine", 120}});
+    label(L"Nome", 12, 352, 44, MoveY);
+    edit(L"", EditName, 60, 348, 300, MoveY | GrowW);
+    label(L"Lingua", 372, 352, 48, MoveX | MoveY);
+    make(L"COMBOBOX", L"", EditLang, 422, 348, 126, 300, WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL, MoveX | MoveY);
+    for (auto text : languageChoices) SendMessageW(control(EditLang), CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
+    SendMessageW(control(EditLang), CB_SETDROPPEDWIDTH, px(190), 0);
+    checkbox(L"Predefinita", EditDefault, 560, 349, 96, MoveX | MoveY);
+    checkbox(L"Forzata", EditForced, 660, 349, 88, MoveX | MoveY);
+    label(L"Ritardo ms", 12, 386, 72, MoveY);
+    edit(L"0", EditDelay, 88, 382, 80, MoveY);
+    label(L"Spunta = includi  ·  Spazio = includi/escludi  ·  Ctrl+↑/↓ = sposta  ·  trascina qui audio/sottotitoli", 180, 386, 568, MoveY | GrowW);
+    label(L"Mantieni lingue", 12, 420, 104, MoveY);
+    edit(L"ita, jpn", LangFilter, 118, 416, 120, MoveY);
+    button(L"Filtra audio e sottotitoli", FilterApply, 244, 415, 184, MoveY);
+    checkbox(L"Imposta titolo", SetTitle, 12, 451, 128, MoveY);
+    edit(L"{name}", Title, 144, 450, 604, MoveY | GrowW);
+
+    buildingPage = 2;  // Impostazioni
+    label(L"Cartella MKVToolNix", 12, 84, 400);
+    edit(L"", Tools, 12, 106, 630, GrowW);
+    button(L"Sfoglia...", ToolsBrowse, 650, 105, 98, MoveX);
+    make(L"STATIC", L"Serve la cartella con mkvmerge.exe e mkvpropedit.exe. MKVToolNix resta esterno al programma.", 0, 12, 140, 736, 22, SS_NOPREFIX, GrowW);
+    checkbox(L"Copia veloce quando la struttura non cambia (solo intestazioni, niente remux)", FastCopy, 12, 178, 736, GrowW);
+    checkbox(L"Una sola traccia predefinita per tipo (attivarne una disattiva le altre)", Exclusive, 12, 206, 736, GrowW);
+    checkbox(L"Rimuovi capitoli", NoChapters, 12, 234, 736, GrowW);
+    checkbox(L"Rimuovi allegati (font e immagini)", NoAttachments, 12, 262, 736, GrowW);
+    checkbox(L"Rimuovi tag globali", NoTags, 12, 290, 736, GrowW);
+    make(L"STATIC",
+         L"Rimozioni, riordino, tracce esterne e ritardi richiedono un remux con mkvmerge, senza ricodifica.\r\n"
+         L"Gli originali restano intatti, il CRC32 è calcolato sul file finale e i nomi esistenti non vengono sovrascritti.",
+         0, 12, 328, 736, 44, SS_NOPREFIX, GrowW);
+
+    buildingPage = 3;  // Log
+    make(L"EDIT", L"", LogBox, 12, 80, 736, 396, WS_TABSTOP | ES_MULTILINE | ES_READONLY | WS_VSCROLL | ES_AUTOVSCROLL, GrowW | GrowH);
+    SendMessageW(control(LogBox), EM_SETLIMITTEXT, 1000000, 0);
+
+    buildingPage = -1;  // barra inferiore
+    make(L"BUTTON", L"Avvia batch", Start, 12, 494, 112, 32, WS_TABSTOP, MoveY);
+    make(L"BUTTON", L"Annulla", Cancel, 130, 494, 90, 32, WS_TABSTOP, MoveY);
+    EnableWindow(control(Cancel), FALSE);
+    make(PROGRESS_CLASSW, L"", ProgressBar, 230, 501, 160, 18, PBS_SMOOTH, MoveY);
+    SendMessageW(control(ProgressBar), PBM_SETRANGE32, 0, 1000);
+    make(L"STATIC", L"Pronto", Status, 400, 501, 348, 22, SS_NOPREFIX | SS_ENDELLIPSIS, MoveY | GrowW);
+
+    PWSTR local = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &local))) {
+        settings = fs::path(local) / L"MKVFlow";
+        CoTaskMemFree(local);
+        std::error_code ec;
+        fs::create_directories(settings, ec);
+        settings /= L"settings.ini";
+        if (!fs::exists(settings, ec)) {
+            std::ofstream ini(settings, std::ios::binary);
+            ini.put(static_cast<char>(0xFF));
+            ini.put(static_cast<char>(0xFE));
+        }
+    }
+    put(Tools, readSetting(L"Tools", L"C:\\Program Files\\MKVToolNix"));
+    put(Output, readSetting(L"Output", L""));
+    put(Pattern, readSetting(L"Pattern", L"{name} [{crc}]"));
+    put(LangFilter, readSetting(L"Languages", L"ita, jpn"));
+    check(FastCopy, readSetting(L"FastCopy", L"1") == L"1");
+    check(Exclusive, readSetting(L"ExclusiveDefault", L"1") == L"1");
+    check(NoChapters, readSetting(L"NoChapters", L"0") == L"1");
+    check(NoAttachments, readSetting(L"NoAttachments", L"0") == L"1");
+    check(NoTags, readSetting(L"NoGlobalTags", L"0") == L"1");
+    DragAcceptFiles(window, TRUE);
+    showPage(0);
+    fillTracks();
+}
+
+void dropFiles(HDROP drop) {
+    UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+    std::vector<fs::path> paths;
+    for (UINT i = 0; i < n; ++i) {
+        std::vector<wchar_t> p(DragQueryFileW(drop, i, nullptr, 0) + 1);
+        DragQueryFileW(drop, i, p.data(), static_cast<UINT>(p.size()));
+        paths.push_back(p.data());
+    }
+    DragFinish(drop);
+    if (busy) return;
+    if (currentPage == 1 && currentJob()) {
+        // Nella scheda Flussi i file trascinati diventano tracce del file aperto.
+        std::vector<fs::path> files;
+        std::error_code ec;
+        for (const auto& p : paths) if (fs::is_regular_file(p, ec)) files.push_back(p);
+        addExternals(files);
+        return;
+    }
+    for (const auto& p : paths) addPath(p);
+    refreshQueue();
+}
+
+LRESULT CALLBACK procedure(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
+    try {
+        switch (msg) {
+        case WM_CREATE: window = hwnd; build(); return 0;
+        case WM_SIZE: layout(); return 0;
+        case WM_GETMINMAXINFO: {
+            RECT bounds{0, 0, MulDiv(BaseWidth, dpi, 96), MulDiv(BaseHeight, dpi, 96)};
+            AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, 0);
+            reinterpret_cast<MINMAXINFO*>(l)->ptMinTrackSize = {bounds.right - bounds.left, bounds.bottom - bounds.top};
+            return 0;
+        }
+        case WM_DROPFILES: dropFiles(reinterpret_cast<HDROP>(w)); return 0;
+        case WM_COMMAND: command(LOWORD(w), HIWORD(w)); return 0;
+        case WM_NOTIFY: return notify(reinterpret_cast<NMHDR*>(l));
+        case LogMessage: { std::unique_ptr<std::wstring> s(reinterpret_cast<std::wstring*>(l)); logText(*s); return 0; }
+        case AnalyzedMessage: analyzed(std::unique_ptr<Analyzed>(reinterpret_cast<Analyzed*>(l))); return 0;
+        case StateMessage: {
+            std::unique_ptr<StateUpdate> s(reinterpret_cast<StateUpdate*>(l));
+            if (s->job < items.size()) { items[s->job].state = s->text; queueRow(s->job); }
+            return 0;
+        }
+        case ProgressMessage: SendMessageW(control(ProgressBar), PBM_SETPOS, w, 0); return 0;
+        case LangCodeMessage:
+            if (Job* job = currentJob()) {
+                int row = selectedRow(Tracks);
+                if (row >= 0) { filling = true; put(EditLang, job->tracks[row].language); filling = false; }
+            }
+            return 0;
+        case DoneMessage: {
+            if (worker.joinable()) worker.join();
+            bool wasBatch = batchRunning;
+            batchRunning = false;
+            setBusy(false);
+            if (closeAfter) { SendMessageW(hwnd, WM_CLOSE, 0, 0); return 0; }
+            if (cancelled) { startAfterAnalysis = false; status(L"Annullato — consulta il log"); return 0; }
+            if (wasBatch) { status(L"Batch terminato — consulta il log"); showPage(3); return 0; }
+            if (startAfterAnalysis) {
+                startAfterAnalysis = false;
+                bool ready = std::all_of(items.begin(), items.end(), [](const Item& i) { return i.job.analyzed(); });
+                if (ready) launchBatch();
+                else { status(L"Alcuni file non sono stati analizzati: vedere il Log"); showPage(3); }
+                return 0;
+            }
+            status(L"Analisi completata");
+            return 0;
+        }
+        case WM_CLOSE:
+            if (busy) { closeAfter = true; cancelled = true; status(L"Chiusura dopo annullamento..."); return 0; }
+            saveSettings();
+            DestroyWindow(hwnd);
+            return 0;
+        case WM_DESTROY: DeleteObject(font); PostQuitMessage(0); return 0;
+        }
+    } catch (const std::exception& e) {
+        MessageBoxW(hwnd, errorText(e).c_str(), L"MKV Flow", MB_OK | MB_ICONERROR);
+        if (msg == WM_COMMAND || msg == WM_NOTIFY) return 0;
+    }
+    return DefWindowProcW(hwnd, msg, w, l);
+}
+}  // namespace
+
+int WINAPI wWinMain(HINSTANCE h, HINSTANCE, PWSTR, int show) {
+    instance = h;
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    INITCOMMONCONTROLSEX cc{sizeof(cc), ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_PROGRESS_CLASS};
+    InitCommonControlsEx(&cc);
+    WNDCLASSW wc{};
+    wc.lpfnWndProc = procedure;
+    wc.hInstance = h;
+    wc.lpszClassName = L"MKVFlowWindow";
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+    wc.hIcon = LoadIconW(h, MAKEINTRESOURCEW(1));
+    RegisterClassW(&wc);
+    dpi = GetDpiForSystem();
+    RECT bounds{0, 0, MulDiv(BaseWidth, dpi, 96), MulDiv(BaseHeight, dpi, 96)};
+    AdjustWindowRectEx(&bounds, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, L"MKV Flow " MKVFLOW_VERSION_W, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
+                                CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top, nullptr, nullptr, h, nullptr);
+    if (!hwnd) { CoUninitialize(); return 1; }
+    ShowWindow(hwnd, show);
+    MSG m{};
+    while (GetMessageW(&m, nullptr, 0, 0) > 0) {
+        // Ctrl+↑/↓ sposta la traccia selezionata.
+        if (m.message == WM_KEYDOWN && (m.wParam == VK_UP || m.wParam == VK_DOWN) && (GetKeyState(VK_CONTROL) & 0x8000) &&
+            m.hwnd == GetDlgItem(hwnd, Tracks)) {
+            moveTrack(m.wParam == VK_UP ? -1 : 1);
+            continue;
+        }
+        if (!IsDialogMessageW(hwnd, &m)) { TranslateMessage(&m); DispatchMessageW(&m); }
+    }
+    CoUninitialize();
+    return static_cast<int>(m.wParam);
+}

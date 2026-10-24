@@ -1,4 +1,24 @@
-# Verifica 0.2.0 — 23 ottobre 2026
+# Verifica 0.3.0 — 24 ottobre 2026
+
+- GitHub Actions (windows-latest, MSVC v143, `/warnaserror`): build Release x64 riuscita.
+- Suite core superata: analisi JSON di `mkvmerge -J` (escape Unicode e surrogati,
+  file non riconosciuti, JSON troncato), layout predefinito, predefinita unica per tipo,
+  argomenti `mkvpropedit` per sole intestazioni, argomenti `mkvmerge` per riordino,
+  rimozione, ritardo, opzioni contenitore e tracce esterne, modello batch con proprietà
+  non modificate conservate e differenze segnalate, filtro lingue, abbinamento file.
+  La stessa suite è stata eseguita anche su Linux con stub Win32 e sanitizer ASan/UBSan.
+- Test processi superati (argomenti Unicode, output UTF-8, exit code, annullamento).
+- Integrazione con MKVToolNix installato da Chocolatey superata: fixture sintetica con
+  due audio e SRT esterno; copia veloce con titolo, nomi e flag verificati con `-J`;
+  remux con riordino, rimozione, SRT esterno (lingua dal nome, nome, ritardo); CRC nel
+  nome, originali intatti, collisione senza sostituzione, errore mkvmerge con pulizia
+  del temporaneo, annullamento.
+- Avvio di prova della GUI in CI: finestra creata e chiusa correttamente.
+- Non verificati: aspetto visivo della nuova scheda Flussi, uso interattivo completo
+  della GUI, monitor con DPI diversi, file video reali di grandi dimensioni.
+- Eseguibile non firmato digitalmente.
+
+## Verifiche 0.2.0
 
 - Build Release x64 con Visual Studio 2026 riuscita.
 - Suite core e wrapper processi superata.
