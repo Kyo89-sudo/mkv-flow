@@ -1,4 +1,4 @@
-# Verifica 0.4.0 — 24 ottobre 2026
+# Verifica 0.4.0 / 0.4.1 — 24 ottobre 2026
 
 - Test core per trova/sostituisci, piano di rinomina (file affiancati, collisioni,
   nomi non validi, maiuscole), sostituzione nei nomi e titoli del batch; eseguiti
